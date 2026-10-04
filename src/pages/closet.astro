@@ -18,21 +18,133 @@ import ProfileTheme from "../components/ProfileTheme.astro";
     <p class="closet-library-message" id="closet-message" role="status" aria-live="polite">
       LOADING YOUR CLOSET...
     </p>
-    <section class="closet-grid" id="closet-grid" aria-label="Clothing items"></section>
+    <div class="closet-layout">
+      <div class="closet-clothes">
+        <section class="closet-filters" id="closet-filters" aria-label="Filter by category"></section>
+        <section class="closet-grid" id="closet-grid" aria-label="Clothing items"></section>
+      </div>
+      <aside class="closet-outfits-side" aria-label="Saved outfits">
+        <section class="closet-outfit-builder" aria-label="Create outfit">
+          <h2 class="closet-outfits-title">SAVED OUTFITS</h2>
+          <div class="closet-saved-outfits" id="closet-saved-outfits"></div>
+          <strong>CREATE OUTFIT</strong>
+          <small id="outfit-builder-hint">SELECT UP TO 5 AI-READY ITEMS, NAME THE OUTFIT AND SAVE IT.</small>
+          <div class="closet-outfit-form">
+            <input type="text" id="outfit-name" maxlength="80" placeholder="Outfit name, e.g. Clueless" />
+            <button type="button" id="save-outfit" disabled>SAVE OUTFIT (0)</button>
+          </div>
+          <p id="outfit-builder-message" role="status" aria-live="polite"></p>
+        </section>
+      </aside>
+    </div>
   </main>
 </Layout>
 
 <script>
   import { supabase } from "../lib/supabase";
-  import { categoryLabel, normalizeClothingCategory } from "../lib/shared/clothing-categories";
+  import {
+    categoryLabel,
+    CLOTHING_FILTER_GROUPS,
+    normalizeClothingCategory,
+  } from "../lib/shared/clothing-categories";
   import { CURRENT_CLOTHING_ASSET_VERSION } from "../lib/shared/clothing-assets";
   import {
     confirmAndDeleteWardrobeItem,
+    deleteSavedDressedOutfit,
     loadPersistentWardrobe,
+    loadSavedDressedOutfits,
+    saveDressedOutfit,
+    type SavedDressedOutfit,
   } from "../lib/client/wardrobe-ai";
+
+  const MAX_OUTFIT_ITEMS = 5;
+  const outfitNameInput = document.querySelector<HTMLInputElement>("#outfit-name")!;
+  const saveOutfitButton = document.querySelector<HTMLButtonElement>("#save-outfit")!;
+  const outfitMessage = document.querySelector<HTMLElement>("#outfit-builder-message")!;
+  const savedOutfitsList = document.querySelector<HTMLElement>("#closet-saved-outfits")!;
+  const selectedOutfitItems = new Set<string>();
+  let outfitBaseType: "woman" | "man" | null = null;
+  let outfitCharacterId: string | null = null;
+  let closetItemNames = new Map<string, string>();
+  let savedOutfits: SavedDressedOutfit[] = [];
+
+  function updateSaveButton() {
+    saveOutfitButton.textContent = `SAVE OUTFIT (${selectedOutfitItems.size})`;
+    saveOutfitButton.disabled = selectedOutfitItems.size === 0 || !outfitBaseType;
+  }
+
+  function renderSavedOutfitList(accessToken: string) {
+    savedOutfitsList.replaceChildren();
+    const relevant = savedOutfits.filter((outfit) =>
+      outfit.characterId === outfitCharacterId && outfit.baseType === outfitBaseType
+    );
+    for (const outfit of relevant) {
+      const row = document.createElement("div");
+      row.className = "closet-saved-outfit";
+      const label = document.createElement("span");
+      label.textContent = `${outfit.name} — ${
+        outfit.itemIds.map((id) => closetItemNames.get(id) ?? "Unavailable item").join(" · ")
+      }`;
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.textContent = "DELETE";
+      remove.addEventListener("click", () => {
+        void (async () => {
+          if (!await deleteSavedDressedOutfit(accessToken, outfit)) return;
+          savedOutfits = savedOutfits.filter(({ id }) => id !== outfit.id);
+          renderSavedOutfitList(accessToken);
+          outfitMessage.textContent = `${outfit.name.toUpperCase()} DELETED.`;
+        })().catch((error) => {
+          outfitMessage.textContent = error instanceof Error
+            ? error.message
+            : "COULD NOT DELETE THE OUTFIT.";
+        });
+      });
+      row.append(label, remove);
+      savedOutfitsList.appendChild(row);
+    }
+  }
 
   const grid = document.querySelector<HTMLElement>("#closet-grid")!;
   const message = document.querySelector<HTMLElement>("#closet-message")!;
+  const filterBar = document.querySelector<HTMLElement>("#closet-filters")!;
+  let activeFilter = "all";
+
+  function applyFilter() {
+    const group = CLOTHING_FILTER_GROUPS.find((entry) => entry.value === activeFilter);
+    let visible = 0;
+    grid.querySelectorAll<HTMLElement>(".closet-item").forEach((card) => {
+      const category = normalizeClothingCategory(card.dataset.category) ?? "other";
+      const show = !group?.categories || group.categories.includes(category);
+      card.hidden = !show;
+      if (show) visible += 1;
+    });
+    grid.querySelector(".closet-filter-empty")?.remove();
+    if (visible === 0 && grid.querySelector(".closet-item")) {
+      const empty = document.createElement("p");
+      empty.className = "closet-library-empty closet-filter-empty";
+      empty.textContent = "NO ITEMS IN THIS CATEGORY.";
+      grid.appendChild(empty);
+    }
+    filterBar.querySelectorAll<HTMLButtonElement>("button").forEach((button) => {
+      const active = button.dataset.filter === activeFilter;
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-pressed", String(active));
+    });
+  }
+
+  for (const group of CLOTHING_FILTER_GROUPS) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "closet-filter-button";
+    button.dataset.filter = group.value;
+    button.textContent = group.label;
+    button.addEventListener("click", () => {
+      activeFilter = group.value;
+      applyFilter();
+    });
+    filterBar.appendChild(button);
+  }
 
   function renderEmpty(text: string) {
     grid.replaceChildren();
@@ -58,6 +170,16 @@ import ProfileTheme from "../components/ProfileTheme.astro";
     }
 
     const saved = await loadPersistentWardrobe(accessToken);
+    outfitBaseType = saved.primaryCharacterBaseType;
+    outfitCharacterId = saved.primaryCharacterId;
+    closetItemNames = new Map(saved.items.map((item) => [item.id, item.name]));
+    selectedOutfitItems.clear();
+    updateSaveButton();
+    savedOutfits = await loadSavedDressedOutfits(accessToken).catch(() => []);
+    renderSavedOutfitList(accessToken);
+    if (!outfitBaseType) {
+      outfitMessage.textContent = "GENERATE A PERSONAL MODEL ON PROFILE TO CREATE OUTFITS.";
+    }
     grid.replaceChildren();
     if (saved.items.length === 0) {
       message.textContent = "YOUR CLOSET IS EMPTY.";
@@ -69,6 +191,7 @@ import ProfileTheme from "../components/ProfileTheme.astro";
     for (const item of saved.items) {
       const card = document.createElement("article");
       card.className = "closet-item";
+      card.dataset.category = item.category;
 
       const imageFrame = document.createElement("div");
       imageFrame.className = "item-image";
@@ -95,14 +218,12 @@ import ProfileTheme from "../components/ProfileTheme.astro";
       status.className = "closet-readiness";
       status.textContent = [
         `WOMAN — ${
-          item.aiReadyAssets.woman?.generationVersion === CURRENT_CLOTHING_ASSET_VERSION &&
-          item.aiReadyAssets.woman.characterId === saved.primaryCharacterId
+          item.aiReadyAssets.woman?.generationVersion === CURRENT_CLOTHING_ASSET_VERSION
             ? "AI READY"
             : "NOT AI READY"
         }`,
         `MAN — ${
-          item.aiReadyAssets.man?.generationVersion === CURRENT_CLOTHING_ASSET_VERSION &&
-          item.aiReadyAssets.man.characterId === saved.primaryCharacterId
+          item.aiReadyAssets.man?.generationVersion === CURRENT_CLOTHING_ASSET_VERSION
             ? "AI READY"
             : "NOT AI READY"
         }`,
@@ -125,6 +246,7 @@ import ProfileTheme from "../components/ProfileTheme.astro";
             ? `${item.name.toUpperCase()} REMOVED. ${remainingCount} CLOTHING ITEMS REMAIN.`
             : "YOUR CLOSET IS EMPTY.";
           if (!remainingCount) renderEmpty("ADD CLOTHING FROM YOUR PROFILE TO GET STARTED.");
+          else applyFilter();
         })().catch((error) => {
           console.error("Could not delete this clothing item.", error);
           message.textContent = error instanceof Error
@@ -132,11 +254,67 @@ import ProfileTheme from "../components/ProfileTheme.astro";
             : "COULD NOT REMOVE THIS CLOTHING ITEM.";
         });
       });
-      info.appendChild(deleteButton);
+      const aiReady = Boolean(outfitBaseType) &&
+        item.aiReadyAssets[outfitBaseType!]?.generationVersion === CURRENT_CLOTHING_ASSET_VERSION;
+      const selectButton = document.createElement("button");
+      selectButton.type = "button";
+      selectButton.className = "select-outfit-item-button";
+      selectButton.disabled = !aiReady;
+      selectButton.textContent = aiReady ? "SELECT FOR OUTFIT" : "NOT AI READY FOR OUTFITS";
+      selectButton.setAttribute("aria-pressed", "false");
+      selectButton.addEventListener("click", () => {
+        if (selectedOutfitItems.has(item.id)) {
+          selectedOutfitItems.delete(item.id);
+        } else if (selectedOutfitItems.size >= MAX_OUTFIT_ITEMS) {
+          outfitMessage.textContent = `AN OUTFIT CAN HAVE AT MOST ${MAX_OUTFIT_ITEMS} ITEMS.`;
+          return;
+        } else {
+          selectedOutfitItems.add(item.id);
+        }
+        const selected = selectedOutfitItems.has(item.id);
+        card.classList.toggle("is-outfit-selected", selected);
+        selectButton.setAttribute("aria-pressed", String(selected));
+        selectButton.textContent = selected ? "SELECTED ✓" : "SELECT FOR OUTFIT";
+        updateSaveButton();
+      });
+      info.append(deleteButton, selectButton);
       card.append(imageFrame, info);
       grid.appendChild(card);
     }
+    applyFilter();
   }
+
+  saveOutfitButton.addEventListener("click", () => {
+    void (async () => {
+      const name = outfitNameInput.value.trim();
+      if (!name) {
+        outfitMessage.textContent = "GIVE THE OUTFIT A NAME.";
+        return;
+      }
+      if (!supabase) return;
+      const { data: session, error } = await supabase.auth.getSession();
+      const accessToken = session.session?.access_token;
+      if (error || !accessToken) throw new Error("PLEASE LOG IN AGAIN.");
+      saveOutfitButton.disabled = true;
+      await saveDressedOutfit(accessToken, name, [...selectedOutfitItems]);
+      savedOutfits = await loadSavedDressedOutfits(accessToken);
+      renderSavedOutfitList(accessToken);
+      outfitMessage.textContent = `${name.toUpperCase()} SAVED.`;
+      outfitNameInput.value = "";
+      selectedOutfitItems.clear();
+      grid.querySelectorAll<HTMLElement>(".closet-item.is-outfit-selected").forEach((card) => {
+        card.classList.remove("is-outfit-selected");
+        const button = card.querySelector<HTMLButtonElement>(".select-outfit-item-button");
+        button?.setAttribute("aria-pressed", "false");
+        if (button) button.textContent = "SELECT FOR OUTFIT";
+      });
+    })().catch((error) => {
+      console.error("Could not save the outfit.", error);
+      outfitMessage.textContent = error instanceof Error
+        ? error.message
+        : "COULD NOT SAVE THE OUTFIT.";
+    }).finally(updateSaveButton);
+  });
 
   void loadCloset().catch((error) => {
     console.error("Could not load the CLOSET library.", error);

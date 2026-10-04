@@ -35,6 +35,10 @@ import ProfileTheme from "../components/ProfileTheme.astro";
               NO DRESSED CHARACTER YET
             </div>
           </div>
+          <section class="saved-outfits" aria-labelledby="saved-outfits-heading">
+            <h2 id="saved-outfits-heading">SAVED OUTFITS</h2>
+            <div class="saved-outfit-picker" id="saved-outfits-grid" aria-live="polite"></div>
+          </section>
         </div>
 
         <aside class="clothing-panel" aria-label="Clothing and accessories">
@@ -80,13 +84,6 @@ import ProfileTheme from "../components/ProfileTheme.astro";
 
       </div>
 
-      <section class="saved-outfits" aria-labelledby="saved-outfits-heading">
-        <h2 id="saved-outfits-heading">SAVED BROWSER OUTFITS</h2>
-        <div class="saved-outfits-grid" id="saved-outfits-grid" aria-live="polite"></div>
-        <h2 id="saved-ai-results-heading">AI TRY-ON RESULTS</h2>
-        <div class="saved-outfits-grid" id="saved-ai-results-grid" aria-live="polite"></div>
-      </section>
-
     </section>
 
   </div>
@@ -100,6 +97,8 @@ import ProfileTheme from "../components/ProfileTheme.astro";
     normalizeClothingCategory,
     categoryLabel,
     clothingLayerOrder,
+    clothingPlacement,
+    DRESSED_ANCHORS,
   } from "../lib/shared/clothing-categories";
   import {
     CURRENT_CLOTHING_ASSET_VERSION,
@@ -117,7 +116,6 @@ import ProfileTheme from "../components/ProfileTheme.astro";
     loadPersistentWardrobe,
     saveDressedOutfit,
     type SavedDressedOutfit,
-    type SavedWardrobeResult,
   } from "../lib/client/wardrobe-ai";
 
   type WardrobeItem = {
@@ -157,9 +155,6 @@ import ProfileTheme from "../components/ProfileTheme.astro";
 
   const savedOutfitsGrid =
     document.querySelector("#saved-outfits-grid") as HTMLElement;
-
-  const savedAiResultsGrid =
-    document.querySelector("#saved-ai-results-grid") as HTMLElement;
 
   let activeCategory = "ALL";
   let clothingItems: WardrobeItem[] = [];
@@ -215,7 +210,6 @@ import ProfileTheme from "../components/ProfileTheme.astro";
       }))
       .filter(({ asset }) =>
         asset?.generationVersion === CURRENT_CLOTHING_ASSET_VERSION &&
-        asset.characterId === activeCharacterId &&
         Boolean(asset.referencePath && asset.previewUrl)
       )
       .forEach(({ item, asset }, index) => {
@@ -225,6 +219,14 @@ import ProfileTheme from "../components/ProfileTheme.astro";
         layer.alt = "";
         layer.dataset.itemId = item.id;
         layer.style.zIndex = String(index + 1);
+        const placement = clothingPlacement(item.category);
+        const anchorPoint = DRESSED_ANCHORS[placement.anchor];
+        layer.dataset.anchor = placement.anchor;
+        layer.style.setProperty("--anchor-x", String(anchorPoint.x));
+        layer.style.setProperty("--anchor-y", String(anchorPoint.y));
+        layer.style.setProperty("--clothing-scale", String(placement.scale));
+        layer.style.setProperty("--clothing-x", `${placement.x}%`);
+        layer.style.setProperty("--clothing-y", `${placement.y}%`);
         layers.appendChild(layer);
       });
   }
@@ -595,30 +597,8 @@ import ProfileTheme from "../components/ProfileTheme.astro";
     });
   });
 
-  function renderSavedAiResults(results: SavedWardrobeResult[]) {
-    savedAiResultsGrid.replaceChildren();
-    if (results.length === 0) {
-      const empty = document.createElement("p");
-      empty.className = "saved-outfits-empty";
-      empty.textContent = "NO AI TRY-ON RESULTS YET.";
-      savedAiResultsGrid.appendChild(empty);
-      return;
-    }
-    for (const result of results) {
-      const card = document.createElement("article");
-      card.className = "saved-outfit-card";
-      const image = document.createElement("img");
-      image.src = result.previewUrl;
-      image.alt = "AI try-on result";
-      image.loading = "lazy";
-      const date = document.createElement("small");
-      date.textContent = new Date(result.createdAt).toLocaleDateString();
-      card.append(image, date);
-      savedAiResultsGrid.appendChild(card);
-    }
-  }
-
   let savedDressedOutfits: SavedDressedOutfit[] = [];
+  let savedOutfitIndex = 0;
 
   function renderSavedOutfits() {
     savedOutfitsGrid.replaceChildren();
@@ -629,11 +609,13 @@ import ProfileTheme from "../components/ProfileTheme.astro";
     if (relevantOutfits.length === 0) {
       const empty = document.createElement("p");
       empty.className = "saved-outfits-empty";
-      empty.textContent = "NO BROWSER-COMPOSED OUTFITS SAVED FOR THIS CHARACTER.";
+      empty.textContent = "NO SAVED OUTFITS YET.";
       savedOutfitsGrid.appendChild(empty);
       return;
     }
-    for (const outfit of relevantOutfits) {
+    savedOutfitIndex = Math.min(Math.max(savedOutfitIndex, 0), relevantOutfits.length - 1);
+    const outfit = relevantOutfits[savedOutfitIndex];
+    {
       const card = document.createElement("article");
       card.className = "saved-outfit-card";
       const name = document.createElement("strong");
@@ -654,8 +636,7 @@ import ProfileTheme from "../components/ProfileTheme.astro";
           const item = clothingItems.find((candidate) => candidate.id === id);
           const asset = item?.aiReadyAssets?.[outfit.baseType];
           return !item ||
-            asset?.generationVersion !== CURRENT_CLOTHING_ASSET_VERSION ||
-            asset.characterId !== outfit.characterId;
+            asset?.generationVersion !== CURRENT_CLOTHING_ASSET_VERSION;
         });
       loadButton.addEventListener("click", () => {
         selectedItems = outfit.itemIds.map((id) =>
@@ -688,7 +669,31 @@ import ProfileTheme from "../components/ProfileTheme.astro";
       });
       actions.append(loadButton, deleteButton);
       card.append(name, summary, actions);
-      savedOutfitsGrid.appendChild(card);
+      if (relevantOutfits.length > 1) {
+        const nav = document.createElement("div");
+        nav.className = "saved-outfit-nav";
+        const prev = document.createElement("button");
+        prev.type = "button";
+        prev.textContent = "←";
+        prev.setAttribute("aria-label", "Previous saved outfit");
+        prev.addEventListener("click", () => {
+          savedOutfitIndex = (savedOutfitIndex - 1 + relevantOutfits.length) % relevantOutfits.length;
+          renderSavedOutfits();
+        });
+        const position = document.createElement("small");
+        position.textContent = `${savedOutfitIndex + 1} / ${relevantOutfits.length}`;
+        const next = document.createElement("button");
+        next.type = "button";
+        next.textContent = "→";
+        next.setAttribute("aria-label", "Next saved outfit");
+        next.addEventListener("click", () => {
+          savedOutfitIndex = (savedOutfitIndex + 1) % relevantOutfits.length;
+          renderSavedOutfits();
+        });
+        nav.append(prev, position, next);
+        savedOutfitsGrid.append(nav);
+      }
+      savedOutfitsGrid.prepend(card);
     }
   }
 
@@ -739,7 +744,6 @@ import ProfileTheme from "../components/ProfileTheme.astro";
     renderClothingItems();
     renderCurrentOutfit();
     renderSavedOutfits();
-    renderSavedAiResults(saved.results);
   }
   void initializeWardrobe().catch((error) => {
     console.error("Could not initialize the DRESSED wardrobe.", error);

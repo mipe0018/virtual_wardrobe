@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { PNG } from "pngjs";
 import type { ClothingBaseType } from "../../shared/clothing-assets";
@@ -41,7 +42,8 @@ export async function loadSystemBaseFormDataUrl(
     throw new Error(`The ${baseType} system base form must be a PNG under 20 MB.`);
   }
 
-  const bytes = new Uint8Array(await blob.arrayBuffer());
+  // pngjs requires a Node Buffer; a plain Uint8Array fails to decode.
+  const bytes = Buffer.from(await blob.arrayBuffer());
   let image: PNG;
   try {
     image = PNG.sync.read(bytes);

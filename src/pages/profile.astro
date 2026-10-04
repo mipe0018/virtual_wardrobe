@@ -93,6 +93,7 @@ import ProfileTheme from "../components/ProfileTheme.astro";
             Upload a source photo to generate your personal AI fashion model.
           </p>
           <div class="character-history" id="character-history" aria-live="polite"></div>
+          <div class="profile-outfits" id="profile-outfits"></div>
         </div>
 
       </div>
@@ -317,6 +318,7 @@ import ProfileTheme from "../components/ProfileTheme.astro";
   import { supabase } from "../lib/supabase";
   import { cacheDressedCharacter } from "../lib/client/dressed-character";
   import { renderGenerationUsage } from "../lib/client/generation-usage";
+  import { failFlow, finishFlow, showFlow } from "../lib/client/generation-flow";
   import {
     confirmAndDeleteWardrobeItem,
     loadPersistentWardrobe,
@@ -334,6 +336,7 @@ import ProfileTheme from "../components/ProfileTheme.astro";
     type ClothingBaseType,
   } from "../lib/shared/clothing-assets";
   import { DRESSED_GEOMETRY_CONTRACT_VERSION } from "../lib/shared/clothing-geometry";
+  import { initProfileOutfits } from "../lib/client/profile-outfits";
 
   /* ========================================
      PROFILE REFERENCES AND STATE
@@ -353,8 +356,14 @@ import ProfileTheme from "../components/ProfileTheme.astro";
     cleanPreviewPath?: string;
     cleanPreviewUrl?: string;
     aiReadyAssets?: Partial<Record<ClothingBaseType, ClothingBaseAsset>>;
+    createdAt?: string;
 
   };
+
+  // Only call after the server has confirmed success; the short delay lets the success state be seen.
+  function reloadAfterSuccess() {
+    window.setTimeout(() => location.reload(), 900);
+  }
 
   const profileForm =
 
@@ -716,6 +725,9 @@ import ProfileTheme from "../components/ProfileTheme.astro";
         image.src = model.signedUrl;
         image.alt = "Your AI-generated fashion model";
         modelPreview.appendChild(image);
+        void initProfileOutfits(accessToken, userId, modelPreview).catch((outfitError) => {
+          console.error("Could not load saved outfits.", outfitError);
+        });
         if (profile.gender === "woman" || profile.gender === "man") {
           void cacheDressedCharacter({
             signedUrl: model.signedUrl,
@@ -932,13 +944,16 @@ import ProfileTheme from "../components/ProfileTheme.astro";
     if (!item.image.startsWith("data:image/") && !item.originalPath) {
       throw new Error("PLEASE RE-UPLOAD THIS IMAGE TO PREPARE IT FOR AI.");
     }
+    showFlow("PREPARING CLOTHING...", "clothing");
     const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
     const accessToken = sessionData.session?.access_token;
     if (sessionError || !accessToken) {
       throw new Error("PLEASE LOG IN AGAIN BEFORE PREPARING CLOTHING.");
     }
     itemPreview.textContent = "CHECKING AND PREPARING CLOTHING WITH AI...";
+    showFlow("GENERATING AI-READY CLOTHING...", "clothing");
     const processedItem = await processClothingItem(accessToken, { ...item, baseType });
+    showFlow("FINALIZING...", "clothing");
     item.aiReadyAssets ??= {};
     item.aiReadyAssets[baseType] = {
       referencePath: processedItem.referencePath,
@@ -962,10 +977,12 @@ import ProfileTheme from "../components/ProfileTheme.astro";
 
   async function uploadSourcePhoto(file: File, imageDataUrl: string) {
     modelDescription.textContent = "UPLOADING SOURCE PHOTO...";
+    showFlow("UPLOADING PHOTO...");
 
     if (!supabase) {
       modelDescription.textContent =
         "SUPABASE IS NOT CONFIGURED. PHOTO WAS NOT UPLOADED.";
+      failFlow(modelDescription.textContent);
       return;
     }
 
@@ -977,6 +994,7 @@ import ProfileTheme from "../components/ProfileTheme.astro";
         console.error("Could not verify the user session for photo upload.", sessionError);
         modelDescription.textContent =
           "PLEASE LOG IN AGAIN BEFORE UPLOADING A PHOTO.";
+        failFlow(modelDescription.textContent);
         return;
       }
 
@@ -996,6 +1014,7 @@ import ProfileTheme from "../components/ProfileTheme.astro";
       if (!response.ok || !result.sourcePhotoPath) {
         modelDescription.textContent =
           result.error ?? "COULDN'T UPLOAD PHOTO. PLEASE TRY AGAIN.";
+        failFlow(modelDescription.textContent);
         createModelButton.disabled = !sourcePhotoPath;
         return;
       }
@@ -1019,10 +1038,12 @@ import ProfileTheme from "../components/ProfileTheme.astro";
       modelDescription.textContent = wardrobeMirrorSaved
         ? "SOURCE PHOTO SAVED — Generate your DRESSED character when ready."
         : "PHOTO SAVED TO YOUR ACCOUNT. WARDROBE PREVIEW COULD NOT BE CACHED ON THIS DEVICE.";
+      finishFlow("PHOTO UPLOADED ✓");
     } catch (error) {
       console.error("Unexpected error while uploading the source photo.", error);
       modelDescription.textContent =
         error instanceof Error ? error.message : "COULDN'T UPLOAD PHOTO. PLEASE TRY AGAIN.";
+      failFlow(modelDescription.textContent);
       createModelButton.disabled =
         !sourcePhotoPath ||
         (profileGender.value !== "woman" && profileGender.value !== "man");
@@ -1041,6 +1062,9 @@ import ProfileTheme from "../components/ProfileTheme.astro";
       return;
     }
 
+    createModelButton.disabled = true;
+    modelGenerationStatus = "processing";
+    showFlow("PREPARING YOUR MODEL...", "character");
     const { data: sessionData, error: sessionError } =
       await supabase.auth.getSession();
     const accessToken = sessionData.session?.access_token;
@@ -1048,12 +1072,15 @@ import ProfileTheme from "../components/ProfileTheme.astro";
     if (sessionError || !accessToken) {
       console.error("Could not verify the session for model generation.", sessionError);
       modelDescription.textContent = "PLEASE LOG IN AGAIN.";
+      modelGenerationStatus = "failed";
+      failFlow("MODEL GENERATION FAILED — PLEASE LOG IN AGAIN.");
+      createModelButton.disabled = false;
       return;
     }
 
-    createModelButton.disabled = true;
     modelDescription.textContent =
       "GENERATING YOUR DRESSED CHARACTER. PLEASE WAIT...";
+    showFlow("GENERATING YOUR MODEL...", "character");
 
     try {
       const response = await fetch("/api/ai/personal-model", {
@@ -1074,9 +1101,11 @@ import ProfileTheme from "../components/ProfileTheme.astro";
         modelDescription.textContent =
           result.error ?? "MODEL GENERATION FAILED. PLEASE TRY AGAIN.";
           modelGenerationStatus = "failed";
+          failFlow("MODEL GENERATION FAILED — " + modelDescription.textContent);
           return;
       }
 
+      showFlow("FINALIZING...", "character");
       const { data: model, error: modelError } = await supabase.storage
         .from("model-images")
         .createSignedUrl(result.modelPhotoPath, 60 * 60);
@@ -1085,6 +1114,7 @@ import ProfileTheme from "../components/ProfileTheme.astro";
         console.error("Model generated, but its preview URL could not be created.", modelError);
         modelDescription.textContent =
           "MODEL CREATED, BUT THE PREVIEW COULD NOT LOAD. PLEASE REFRESH.";
+        failFlow(modelDescription.textContent);
         return;
       }
 
@@ -1106,11 +1136,14 @@ import ProfileTheme from "../components/ProfileTheme.astro";
         `DRESSED CHARACTER READY — ${result.usage?.usedCount ?? "?"} / ${result.usage?.freeLimit ?? "?"} character generations used.`;
       modelGenerationStatus = "completed";
       void loadCharacterHistory();
+      finishFlow("MODEL READY ✓");
+      reloadAfterSuccess();
     } catch (error) {
       console.error("Could not complete model generation.", error);
       modelDescription.textContent =
         "MODEL GENERATION FAILED. PLEASE CHECK YOUR CONNECTION AND TRY AGAIN.";
       modelGenerationStatus = "failed";
+      failFlow("MODEL GENERATION FAILED — " + modelDescription.textContent);
     } finally {
       createModelButton.disabled =
         !sourcePhotoPath ||
@@ -1354,7 +1387,14 @@ import ProfileTheme from "../components/ProfileTheme.astro";
 
     }
 
-    savedItems.forEach((item) => {
+    // Profile shows only the 8 most recently added items; Closet lists everything.
+    const createdTime = (item: ClosetItem) =>
+      item.createdAt ? Date.parse(item.createdAt) || 0 : Number.MAX_SAFE_INTEGER;
+    const visibleItems = [...savedItems]
+      .sort((a, b) => createdTime(b) - createdTime(a))
+      .slice(0, 8);
+
+    visibleItems.forEach((item) => {
 
       const card = document.createElement("article");
 
@@ -1394,8 +1434,7 @@ import ProfileTheme from "../components/ProfileTheme.astro";
         const asset = item.aiReadyAssets?.[baseType];
         const isAiReady = Boolean(
           asset?.referencePath &&
-          asset.generationVersion === CURRENT_CLOTHING_ASSET_VERSION &&
-          asset.characterId === activePrimaryCharacterId
+          asset.generationVersion === CURRENT_CLOTHING_ASSET_VERSION
         );
         const isProcessing = processingItemIds.has(key);
         itemIsProcessing ||= isProcessing;
@@ -1426,6 +1465,11 @@ import ProfileTheme from "../components/ProfileTheme.astro";
             itemProcessingErrors.delete(key);
             renderItems();
             void prepareClosetItem(item, baseType)
+              .then(() => {
+                processingItemIds.delete(key);
+                finishFlow("AI READY ✓");
+                if (processingItemIds.size === 0) reloadAfterSuccess();
+              })
               .catch((error) => {
                 console.error(`Could not prepare this closet item for ${baseType}.`, error);
                 const message = error instanceof Error
@@ -1433,6 +1477,7 @@ import ProfileTheme from "../components/ProfileTheme.astro";
                   : "COULDN'T PREPARE ITEM. PLEASE TRY AGAIN.";
                 itemProcessingErrors.set(key, message);
                 itemPreview.textContent = message;
+                failFlow(message);
               })
               .finally(() => {
                 processingItemIds.delete(key);
@@ -1508,6 +1553,7 @@ import ProfileTheme from "../components/ProfileTheme.astro";
         originalPath: stored.originalPath ?? undefined,
         originalPreviewUrl: stored.originalPreviewUrl ?? undefined,
         aiReadyAssets: stored.aiReadyAssets ?? {},
+        createdAt: stored.createdAt,
       };
     });
     renderItems();
@@ -1561,14 +1607,17 @@ import ProfileTheme from "../components/ProfileTheme.astro";
       const submitButton = newItemForm.querySelector<HTMLButtonElement>("button[type=submit]");
       if (submitButton) submitButton.disabled = true;
       void (async () => {
+        showFlow("UPLOADING CLOTHING...");
         if (!supabase) {
           itemPreview.textContent = "SUPABASE IS NOT CONFIGURED.";
+          failFlow(itemPreview.textContent);
           return;
         }
         const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
         const token = sessionData.session?.access_token;
         if (sessionError || !token) {
           itemPreview.textContent = "PLEASE LOG IN AGAIN BEFORE SAVING CLOTHING.";
+          failFlow(itemPreview.textContent);
           return;
         }
         const saved = await saveOriginalClothingItem(token, newItem);
@@ -1586,11 +1635,14 @@ import ProfileTheme from "../components/ProfileTheme.astro";
             ? "CLOTHING SAVED WITH A CLEAN PREVIEW. MAKE IT AI-READY WHEN YOU WANT TO STYLE IT."
             : "CLOTHING SAVED TO YOUR ACCOUNT WITH A CLEAN PREVIEW.";
         itemForm.classList.remove("is-open");
+        finishFlow("CLOTHING ADDED ✓");
+        reloadAfterSuccess();
       })()
         .catch((error) => {
           console.error("Could not save original clothing.", error);
           itemPreview.textContent =
             error instanceof Error ? error.message : "COULD NOT SAVE THIS CLOTHING ITEM.";
+          failFlow(itemPreview.textContent);
         })
         .finally(() => {
           if (submitButton) submitButton.disabled = false;

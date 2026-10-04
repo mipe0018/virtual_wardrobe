@@ -56,6 +56,38 @@
   text-align: center;
 }
 
+.closet-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 1rem;
+}
+
+.closet-filter-button {
+  padding: 0.4rem 0.7rem;
+  border: 1px solid var(--border, #5d535b);
+  background: #fff;
+  color: var(--grey-900);
+  font-family: "DM Mono", monospace;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  cursor: pointer;
+}
+
+.closet-filter-button:hover {
+  background: var(--pink-100);
+}
+
+.closet-filter-button.is-active {
+  background: var(--pink-300);
+  box-shadow: 2px 2px 0 var(--border, #5d535b);
+}
+
+.closet-library .closet-item[hidden] {
+  display: none;
+}
+
 @media (max-width: 700px) {
   .closet-library .closet-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -65,5 +97,100 @@
   .closet-library-heading {
     align-items: flex-start;
     flex-direction: column;
+  }
+}
+
+.closet-outfit-builder {
+  display: grid;
+  gap: 0.5rem;
+  margin: 1rem 0;
+  padding: 1rem;
+  border: 1px solid currentColor;
+}
+.closet-outfit-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.closet-outfit-form input {
+  flex: 1 1 200px;
+  padding: 0.5rem;
+}
+.closet-outfit-builder button {
+  cursor: pointer;
+  padding: 0.5rem 0.75rem;
+  font: inherit;
+}
+.select-outfit-item-button {
+  cursor: pointer;
+  margin-top: 0.85rem;
+  padding: 0.4rem 0.6rem;
+  font: inherit;
+  font-size: 0.85em;
+}
+.closet-outfit-builder button:disabled,
+.select-outfit-item-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+.closet-saved-outfit {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  align-items: center;
+  font-size: 0.8rem;
+}
+.closet-item.is-outfit-selected {
+  outline: 3px solid currentColor;
+  outline-offset: 2px;
+}
+
+.closet-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 1.5rem;
+  align-items: start;
+}
+.closet-clothes {
+  min-width: 0;
+}
+.closet-outfits-side {
+  position: sticky;
+  top: 1rem;
+  min-width: 0;
+}
+.closet-outfits-side .closet-outfit-builder {
+  margin: 1.25rem 0 0;
+  border: 2px solid var(--border, #5d535b);
+  background: var(--pink-100);
+  box-shadow: 4px 4px 0 var(--border, #5d535b);
+}
+.closet-outfits-title {
+  margin: 0;
+  font-family: "DM Mono", monospace;
+  font-size: 0.75rem;
+  letter-spacing: 0.06em;
+}
+.closet-saved-outfits:empty::before {
+  content: "NO SAVED OUTFITS YET.";
+  font-family: "DM Mono", monospace;
+  font-size: 0.6rem;
+  color: var(--grey-700);
+}
+.closet-saved-outfits {
+  display: grid;
+  gap: 0.5rem;
+}
+.closet-saved-outfits .closet-saved-outfit {
+  padding: 0.5rem;
+  border: 1px solid var(--border, #5d535b);
+  background: #fff;
+}
+@media (max-width: 900px) {
+  .closet-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .closet-outfits-side {
+    position: static;
   }
 }

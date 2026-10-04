@@ -604,3 +604,48 @@ body.profile-page-shell {
     height: auto;
   }
 }
+.profile-dressed-canvas {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+.profile-clothing-layers {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.uploaded-model .profile-clothing-layer {
+  position: absolute;
+  inset: 0;
+  object-fit: contain;
+  object-position: center;
+  --clothing-base-scale: 0.56;
+  transform-origin: calc(var(--anchor-x, 0.5) * 100%) calc(var(--anchor-y, 0.2) * 100%);
+  transform:
+    translate(var(--clothing-x, 0%), var(--clothing-y, 0%))
+    scale(calc(var(--clothing-base-scale) * var(--clothing-scale, 1)));
+}
+.profile-outfits {
+  display: grid;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+.profile-outfit-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+.profile-outfit-choice,
+.profile-outfit-save {
+  cursor: pointer;
+  padding: 0.4rem 0.7rem;
+  font: inherit;
+}
+.profile-outfit-choice.is-selected {
+  outline: 2px solid currentColor;
+  font-weight: 700;
+}
+.profile-outfit-save:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}

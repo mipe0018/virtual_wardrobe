@@ -122,11 +122,20 @@ export const DELETE: APIRoute = async ({ params, request }) => {
     return jsonError("Could not prepare this character for removal.", 500);
   }
 
+  // Clothing assets are shared per base type, so they are only removed with the
+  // last remaining character of that base type.
+  const baseTypeStillCovered = characters.some((savedCharacter) =>
+    savedCharacter.id !== character.id &&
+    savedCharacter.gender === character.gender &&
+    savedCharacter.geometry_contract_version === DRESSED_GEOMETRY_CONTRACT_VERSION
+  );
+  const sharedAssets = baseTypeStillCovered ? [] : activeAssets ?? [];
+
   const paths = Array.from(new Set([
     character.model_path,
     ...(assets ?? []).map((asset) => asset.reference_path),
     ...(results ?? []).map((result) => result.result_path),
-    ...(activeAssets ?? []).map((asset) => asset.reference_path),
+    ...sharedAssets.map((asset) => asset.reference_path),
   ]));
   if (paths.some((path) => !path.startsWith(`${user.id}/`))) {
     console.error("Refused to remove DRESSED character files outside the user's folder.");
@@ -177,12 +186,12 @@ export const DELETE: APIRoute = async ({ params, request }) => {
   }
 
   let activeAssetsWarning: string | null = null;
-  if (activeAssets?.length) {
+  if (sharedAssets.length) {
     const { error: activeAssetsDeleteError } = await client
       .from("wardrobe_item_ai_assets")
       .delete()
       .eq("user_id", user.id)
-      .in("reference_path", activeAssets.map((asset) => asset.reference_path));
+      .in("reference_path", sharedAssets.map((asset) => asset.reference_path));
     if (activeAssetsDeleteError) {
       console.error("Character was deleted, but its active clothing asset rows could not be removed.", activeAssetsDeleteError);
       activeAssetsWarning =

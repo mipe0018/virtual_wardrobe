@@ -1,4 +1,5 @@
-import type { APIRoute } from "astro";
+﻿import type { APIRoute } from "astro";
+import { Buffer } from "node:buffer";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { authenticateSupabaseRequest } from "../../../lib/server/supabase";
 import {
@@ -9,6 +10,7 @@ import {
 } from "../../../lib/server/ai/openai-images";
 import { imageExtension, matchesImageSignature } from "../../../lib/server/ai/image-input";
 import { PNG } from "pngjs";
+import { loadSystemBaseFormDataUrl } from "../../../lib/server/ai/base-forms";
 import { DRESSED_GEOMETRY_CONTRACT_VERSION } from "../../../lib/shared/clothing-geometry";
 import {
   finishGeneration,
@@ -32,28 +34,136 @@ function jsonError(message: string, status: number) {
   });
 }
 
-function characterPrompt(gender: "woman" | "man"): string {
+function characterPrompt(gender: "woman" | "man", hasBaseForm: boolean): string {
   const genderStyle =
     gender === "woman"
-      ? "Create a feminine-presenting character. Keep the hair styled neatly away from the face, neck, and ears so both ears and the neck are clearly visible."
-      : "Create a masculine-presenting character. Keep the hair styled neatly away from the face, neck, and ears so both ears and the neck are clearly visible.";
+      ? "Create a feminine-presenting fashion character with the hair styled neatly away from the face, neck, and ears."
+      : "Create a masculine-presenting fashion character with the hair styled neatly away from the face, neck, and ears.";
+
+  const identity = hasBaseForm
+    ? [
+        "Image 1 is the user's identity reference. Use it only for the person's face, hairstyle, hair color, skin tone, and other visible identity characteristics.",
+        `Image 2 is the canonical DRESSED ${gender} base form and the geometric master. Follow image 2 for the fixed 1024x1536 canvas, the centered placement, the straight front-facing pose, and the overall character geometry. Do not copy image 2's face, hair, or identity, and do not copy image 1's crop, camera framing, or pose.`,
+      ]
+    : ["Image 1 is the user's identity reference."];
 
   return [
-    "Image 1 is the user's identity reference.",
-    "Create a polished, front-facing full-body illustrated DRESSED fashion model, with the full head and hair visible and the entire figure within a centered 2:3 canvas.",
-    "Preserve the user's recognizable face, hairstyle, hair color, skin tone and identifying visual details. Adapt the reference into a consistent full-body fashion-character composition rather than copying its crop or camera framing.",
-    "Transform the person into a playful 1990s/Clueless-inspired fashion-doll editorial illustration.",
+    ...identity,
+    "Create a polished, centered, straight, front-facing full-body DRESSED fashion character, with the full head and hair visible and the entire figure within a 2:3 canvas.",
+    "Keep the user's recognizable face, hairstyle, hair color, and skin tone, without any eyewear or other worn items.",
+    "Use a playful 1990s/Clueless-inspired fashion illustration style.",
     genderStyle,
-    "Always place all hair completely behind both shoulders. No hair may fall in front of either shoulder or overlap the chest, torso, or any area intended to be covered by later clothing layers; keep that clothing-layer area clear of hair.",
-    "Use a natural, relaxed, front-facing standing fashion-model pose with arms slightly separated from the torso, feet visible, even margins, and consistent proportions. This figure is a stable reference for later clothing overlays.",
-    "Use a simple, matte, opaque, solid-color sleeveless top and separate simple, matte, opaque mid-thigh bottoms. Keep both pieces visually neutral and functional only as a modest covering base layer, with a clear separation between the top and bottoms.",
-    "Do not add pants, jeans, skirts, shorts, permanent fashion items, accessories, shoes, or outerwear. Do not emphasize the chest, hips, waist, or other body shapes; avoid suggestive framing or posing.",
-    "Use a plain neutral background and even, soft studio lighting, without scenery, props, or dramatic shadows.",
-    "Keep the face, hairstyle, general appearance, and overall character design consistent and recognizable.",
-    "Do not add large accessories, jewelry, props, or objects. Do not cover the face, neck, or ears.",
-    "The result should be a stylized digital fashion illustration, not a photograph.",
-    "Keep the overall presentation neutral and non-sexualized, like a 1990s fashion editorial illustration.",
+    "Keep the hair behind the shoulders so the area where clothing layers will be placed stays clear.",
+    "Use a relaxed standing pose with the arms slightly away from the sides and both feet visible.",
+    "Use a simple, matte, opaque, solid-color sleeveless top and a simple, matte, opaque, solid-color short garment as a neutral character base, in a solid neutral color. The base outfit is only a visual foundation for the DRESSED clothing layers, and clothing from the source photo is not carried over. No shoes and no permanent fashion items.",
+    "Create the character without wearable accessories so accessories can be added later as separate DRESSED layers. Draw a clean, bare face with clearly visible eyes and ears, and a plain neck and wrists. Items worn in image 1, such as glasses, sunglasses, hats, earrings, necklaces, bracelets, watches, bags, scarves and hair accessories, are not part of the person's identity and are left out; the hair itself is kept as in image 1.",
+    "Use a clean, uniform, pure white background (#FFFFFF) across the whole canvas, replacing the background of image 2 and image 1, with soft, even studio-style lighting and no gradient, shadow on the background, or props.",
+    "The final image is a clean digital fashion character illustration, not a photograph.",
   ].join(" ");
+}
+function describeDataUrl(dataUrl: string) {
+  const match = /^data:([^;]+);base64,(.*)$/s.exec(dataUrl);
+  if (!match) return { valid: false as const };
+  const bytes = Buffer.from(match[2], "base64");
+  const isPng = matchesImageSignature(bytes, "image/png");
+  let width: number | null = null;
+  let height: number | null = null;
+  let decodes = false;
+  if (isPng) {
+    try {
+      const decoded = PNG.sync.read(bytes);
+      width = decoded.width;
+      height = decoded.height;
+      decodes = true;
+    } catch {
+      decodes = false;
+    }
+  }
+  return { valid: true as const, mimeType: match[1], bytes: bytes.length, isPng, width, height, decodes };
+}
+
+// DEV ONLY. TEST A = source photo only, B = canonical base form only,
+// C = source photo + canonical base form (the production input), INFO = no OpenAI call.
+async function runDiagnostic(
+  test: string,
+  gender: "woman" | "man",
+  sourceDataUrl: string,
+  client: SupabaseClient
+) {
+  const noStore = { "Cache-Control": "no-store" };
+  if (!["A", "B", "C", "INFO"].includes(test)) {
+    return Response.json({ error: "Use diagnostic=A, B, C or INFO." }, { status: 400, headers: noStore });
+  }
+
+  let baseFormDataUrl: string;
+  try {
+    baseFormDataUrl = await loadSystemBaseFormDataUrl(client, gender);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    const category = /configuration|not configured|look up/i.test(message)
+      ? "database_lookup_failed"
+      : /download|base-form image/i.test(message)
+        ? "storage_download_failed"
+        : /decoded/i.test(message)
+          ? "png_validation_failed"
+          : /1024x1536/.test(message)
+            ? "dimension_validation_failed"
+            : /PNG under/.test(message)
+              ? "png_validation_failed"
+              : "unknown";
+    console.error(`[diagnostic] Could not load the ${gender} base form (${category}).`, error);
+    return Response.json(
+      { test, category, error: `The canonical ${gender} base form could not be loaded or failed validation.` },
+      { status: 503, headers: noStore }
+    );
+  }
+
+  const inputs = {
+    source: describeDataUrl(sourceDataUrl),
+    baseForm: describeDataUrl(baseFormDataUrl),
+  };
+  if (test === "INFO") {
+    return Response.json(
+      { test, gender, model: "gpt-image-2.5-sunburst", size: "1024x1536", quality: "high", inputs },
+      { headers: noStore }
+    );
+  }
+
+  const images =
+    test === "A" ? [sourceDataUrl] : test === "B" ? [baseFormDataUrl] : [sourceDataUrl, baseFormDataUrl];
+  console.info(`[diagnostic] TEST ${test}: sending ${images.length} image(s) to OpenAI.`);
+  try {
+    const result = await editImage({
+      images,
+      size: "1024x1536",
+      prompt: characterPrompt(gender, test === "C"),
+    });
+    console.info(`[diagnostic] TEST ${test}: accepted (${result.bytes.length} bytes). Result discarded.`);
+    return Response.json(
+      { test, gender, accepted: true, imagesSent: images.length, inputs },
+      { headers: noStore }
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "unknown error";
+    const safety = /safety_violations=\[([^\]]*)\]/.exec(message)?.[1] ?? null;
+    console.warn(
+      `[diagnostic] TEST ${test}: rejected. status=${error instanceof OpenAIImageError ? error.status : "n/a"} safety=${safety ?? "none"}`
+    );
+    return Response.json(
+      {
+        test,
+        gender,
+        accepted: false,
+        imagesSent: images.length,
+        safetyViolations: safety,
+        error: `TEST ${test} (${
+          test === "A" ? "source only" : test === "B" ? "base form only" : "source + base form"
+        }) failed: ${message}`,
+        inputs,
+      },
+      { status: 200, headers: noStore }
+    );
+  }
 }
 
 async function setGenerationStatus(
@@ -134,6 +244,16 @@ export const POST: APIRoute = async ({ request }) => {
       throw error;
     }
 
+    // Development-only image-input diagnostics. Runs after authentication and source
+    // moderation but BEFORE the quota reservation; it never touches quota, status,
+    // storage, or the database, and is compiled out of production builds.
+    if (import.meta.env.DEV) {
+      const diagnostic = new URL(request.url).searchParams.get("diagnostic");
+      if (diagnostic) {
+        return runDiagnostic(diagnostic.toUpperCase(), profile.gender, sourceDataUrl, client);
+      }
+    }
+
     reservation = await reserveGeneration(client, "character");
     if (!(await setGenerationStatus(client, user.id, "pending"))) {
       throw new Error("Could not start character generation.");
@@ -142,10 +262,17 @@ export const POST: APIRoute = async ({ request }) => {
       throw new Error("Could not update character generation status.");
     }
 
+    let baseFormDataUrl: string | null = null;
+    try {
+      baseFormDataUrl = await loadSystemBaseFormDataUrl(client, profile.gender);
+    } catch (error) {
+      console.warn(`The canonical ${profile.gender} base form is unavailable; generating without it.`, error);
+    }
+
     const result = await editImage({
-      images: [sourceDataUrl],
+      images: baseFormDataUrl ? [sourceDataUrl, baseFormDataUrl] : [sourceDataUrl],
       size: "1024x1536",
-      prompt: characterPrompt(profile.gender),
+      prompt: characterPrompt(profile.gender, Boolean(baseFormDataUrl)),
     });
     if (
       !matchesImageSignature(result.bytes, "image/png") ||
