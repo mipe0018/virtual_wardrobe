@@ -100,6 +100,8 @@ import ProfileTheme from "../components/ProfileTheme.astro";
     normalizeClothingCategory,
     categoryLabel,
     clothingLayerOrder,
+    clothingPlacement,
+    DRESSED_ANCHORS,
   } from "../lib/shared/clothing-categories";
   import {
     CURRENT_CLOTHING_ASSET_VERSION,
@@ -215,7 +217,6 @@ import ProfileTheme from "../components/ProfileTheme.astro";
       }))
       .filter(({ asset }) =>
         asset?.generationVersion === CURRENT_CLOTHING_ASSET_VERSION &&
-        asset.characterId === activeCharacterId &&
         Boolean(asset.referencePath && asset.previewUrl)
       )
       .forEach(({ item, asset }, index) => {
@@ -225,6 +226,14 @@ import ProfileTheme from "../components/ProfileTheme.astro";
         layer.alt = "";
         layer.dataset.itemId = item.id;
         layer.style.zIndex = String(index + 1);
+        const placement = clothingPlacement(item.category);
+        const anchorPoint = DRESSED_ANCHORS[placement.anchor];
+        layer.dataset.anchor = placement.anchor;
+        layer.style.setProperty("--anchor-x", String(anchorPoint.x));
+        layer.style.setProperty("--anchor-y", String(anchorPoint.y));
+        layer.style.setProperty("--clothing-scale", String(placement.scale));
+        layer.style.setProperty("--clothing-x", `${placement.x}%`);
+        layer.style.setProperty("--clothing-y", `${placement.y}%`);
         layers.appendChild(layer);
       });
   }
@@ -654,8 +663,7 @@ import ProfileTheme from "../components/ProfileTheme.astro";
           const item = clothingItems.find((candidate) => candidate.id === id);
           const asset = item?.aiReadyAssets?.[outfit.baseType];
           return !item ||
-            asset?.generationVersion !== CURRENT_CLOTHING_ASSET_VERSION ||
-            asset.characterId !== outfit.characterId;
+            asset?.generationVersion !== CURRENT_CLOTHING_ASSET_VERSION;
         });
       loadButton.addEventListener("click", () => {
         selectedItems = outfit.itemIds.map((id) =>

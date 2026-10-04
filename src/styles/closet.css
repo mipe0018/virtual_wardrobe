@@ -56,6 +56,38 @@
   text-align: center;
 }
 
+.closet-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 1rem;
+}
+
+.closet-filter-button {
+  padding: 0.4rem 0.7rem;
+  border: 1px solid var(--border, #5d535b);
+  background: #fff;
+  color: var(--grey-900);
+  font-family: "DM Mono", monospace;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  cursor: pointer;
+}
+
+.closet-filter-button:hover {
+  background: var(--pink-100);
+}
+
+.closet-filter-button.is-active {
+  background: var(--pink-300);
+  box-shadow: 2px 2px 0 var(--border, #5d535b);
+}
+
+.closet-library .closet-item[hidden] {
+  display: none;
+}
+
 @media (max-width: 700px) {
   .closet-library .closet-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));

@@ -127,8 +127,7 @@ export const POST: APIRoute = async ({ request }) => {
   const compatibleItemIds = new Set(
     (assets ?? [])
       .filter((asset) =>
-        asset.generation_version === CURRENT_CLOTHING_ASSET_VERSION &&
-        clothingAssetCharacterId(user.id, asset.reference_path) === primaryCharacter.id
+        asset.generation_version === CURRENT_CLOTHING_ASSET_VERSION
       )
       .map((asset) => asset.item_id)
   );

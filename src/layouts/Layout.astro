@@ -3,6 +3,7 @@ import Header from "../components/Header.astro";
 import Footer from "../components/Footer.astro";
 import "../styles/layout.css";
 import "../styles/profile-theme.css";
+import "../styles/flow-progress.css";
 
 interface Props {
   title: string;
@@ -30,5 +31,10 @@ const { title, header = "public", bodyClass } = Astro.props;
     </main>
 
     <Footer />
+
+    <script>
+      import { initGenerationFlow } from "../lib/client/generation-flow";
+      initGenerationFlow();
+    </script>
   </body>
 </html>

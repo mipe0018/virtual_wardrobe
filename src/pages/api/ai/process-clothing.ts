@@ -1,6 +1,7 @@
 import type { APIRoute } from "astro";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { PNG } from "pngjs";
+import { loadSystemBaseFormDataUrl } from "../../../lib/server/ai/base-forms";
 import {
   authenticateSupabaseRequest,
   createSupabaseServiceClient,
@@ -337,7 +338,6 @@ export const POST: APIRoute = async ({ request }) => {
   }
   if (
     existingAsset?.reference_path &&
-    clothingAssetCharacterId(user.id, existingAsset.reference_path) === primaryCharacter.id &&
     existingAsset.generation_version === CURRENT_CLOTHING_ASSET_VERSION
   ) {
     return assetResponse(
@@ -388,50 +388,18 @@ export const POST: APIRoute = async ({ request }) => {
   }
 
   const sourceDataUrl = imageDataUrl(sourceBytes, sourceMimeType);
-  const { data: characterBlob, error: characterImageError } = await client.storage
-    .from("model-images")
-    .download(primaryCharacter.model_path);
-  if (characterImageError || !characterBlob) {
-    console.error("Could not download the primary character reference image.", characterImageError);
-    return jsonError("Could not load your primary DRESSED character image.", 503);
-  }
-  if (characterBlob.size === 0 || characterBlob.size > 20 * 1024 * 1024) {
-    return jsonError("Your primary DRESSED character image is empty or too large.", 409);
-  }
-  const characterBytes = new Uint8Array(await characterBlob.arrayBuffer());
-  const characterMimeType = ALLOWED_IMAGE_MIME_TYPES.find((mimeType) =>
-    matchesImageSignature(characterBytes, mimeType)
-  );
-  if (!characterMimeType) {
-    return jsonError("Your primary DRESSED character must be a valid PNG, JPEG, or WEBP image.", 409);
-  }
-
-  let characterDimensions: { width: number; height: number } | null = null;
+  // The reusable asset is normalized against the canonical base form for this base type,
+  // never against an individual user's personal model.
+  let characterDataUrl: string;
   try {
-    if (characterMimeType === "image/png") {
-      if (Buffer.from(characterBytes).toString("ascii", 12, 16) !== "IHDR") {
-        throw new Error("Invalid PNG header.");
-      }
-      const decodedCharacter: PNG = PNG.sync.read(Buffer.from(characterBytes));
-      characterDimensions = {
-        width: decodedCharacter.width,
-        height: decodedCharacter.height,
-      };
-    } else if (characterMimeType === "image/jpeg") {
-      characterDimensions = readJpegDimensions(characterBytes);
-    } else {
-      characterDimensions = readWebpDimensions(characterBytes);
-    }
-  } catch {
-    return jsonError("Your primary DRESSED character image is invalid or unreadable.", 409);
+    characterDataUrl = await loadSystemBaseFormDataUrl(client, baseType);
+  } catch (error) {
+    console.error(`Could not load the canonical ${baseType} base form.`, error);
+    return jsonError(
+      `The canonical ${baseType} reference model is not available. Please try again later.`,
+      503
+    );
   }
-  if (!characterDimensions) {
-    return jsonError("Your primary DRESSED character image is invalid or unreadable.", 409);
-  }
-  if (characterDimensions.width !== 1024 || characterDimensions.height !== 1536) {
-    return jsonError("Your primary DRESSED character must be exactly 1024x1536 pixels.", 409);
-  }
-  const characterDataUrl = imageDataUrl(characterBytes, characterMimeType);
 
   try {
     await moderateImage(sourceDataUrl);
@@ -526,9 +494,10 @@ export const POST: APIRoute = async ({ request }) => {
       size: "1024x1536",
       background: "transparent",
       prompt: [
-        `Image 1 is the user's current primary DRESSED ${baseType} character and the ABSOLUTE geometric reference for this clothing layer.`,
-        "The garment must fit this existing character's exact body proportions, position, pose, framing, scale, and body placement. Follow image 1's shoulders, neck, chest, waist, hips, arms, and legs precisely, using the same 1024x1536 canvas and pixel coordinate system.",
-        "Do not generate, redraw, alter, or replace the person or body. Do not change the character's proportions, pose, or position, and do not move the character to a different position on the canvas. Garment placement must follow image 1 exactly, so the output overlays directly on image 1. The garment may be scaled as needed to match the character's actual size.",
+        `Image 1 is the canonical DRESSED ${baseType} base form: the fixed geometric master reference for this clothing layer, shared by every ${baseType} character in DRESSED.`,
+        "The garment must fit this canonical base form's exact body proportions, position, pose, framing, scale, and body placement. Follow image 1's shoulders, neck, chest, waist, hips, arms, and legs precisely, using the same 1024x1536 canvas and pixel coordinate system.",
+        "Do not generate, redraw, alter, or replace the person or body. Do not change the character's proportions, pose, or position, and do not move the character to a different position on the canvas. Garment placement must follow image 1 exactly, so the output overlays directly on image 1. Do not zoom in or out, crop, shift, rotate, change the aspect ratio, or change the perspective or camera of the canvas. The garment is drawn exactly where it sits on the character in image 1, so the output and image 1 align pixel for pixel.",
+        "CANONICAL ALIGNMENT: image 1 is a fixed template, and the finished clothing layer is composited directly over it with no repositioning. The body in image 1 is never changed: no new body shape, no pose change, no change of proportions, and no moving the figure on the canvas. Every garment follows the matching body area of image 1: tops, shirts, and sweaters from the shoulder line to the correct torso length, centered on the body and following its width; jackets over the shoulders, arms, and upper torso; pants from the waist along the legs; shorts and skirts from the hips; dresses from the shoulders or neckline down to the correct length; socks over the ankles; shoes over the feet; accessories at their matching body area.",
         "Do not copy, reproduce, edit, or include any pixels from image 1. Do not render any part of the person, body, skin, hair, base clothing, mannequin, or background in the output.",
         `Image 2 is the original clothing source and the sole visual source for the design of this ${categoryLabel.toLowerCase()}.`,
         `The user-selected target item is named ${itemName}; use its name and category only to identify which item to isolate if image 2 contains multiple objects.`,
@@ -540,12 +509,23 @@ export const POST: APIRoute = async ({ request }) => {
         "If the garment in image 2 fills a very small or very large part of its photo, this must not affect the final size. If its bounding box is larger than the corresponding area of the character, scale the garment down to fit the character's real body measurements; if smaller, scale it up accordingly. If image 2's garment size conflicts with the character's proportions in image 1, image 1 ALWAYS wins; scaling the garment significantly up or down is preferred over a wrong size on the character.",
         "A clearly wrong size must be solved by actually scaling the garment. The character's actual size and body areas in image 1 determine the garment's physical size.",
         "SLEEVES AND ARMS: look at the pose of the character's arms in image 1 and draw every sleeve in exactly that pose. If the arms hang straight down close to the torso, the sleeves must hang straight down close to the torso, from the shoulder seam to the cuff, with the cuff ending where the character's wrist or forearm ends. Do not draw sleeves angled outward, in a T-pose or A-pose, or wider than the character's arms. Each sleeve must lie directly over the character's own arm; the garment's body and sleeves must not be wider than the character's torso and arms plus a small garment allowance.",
-        "SHOULDER ALIGNMENT AND WIDTH: place the garment's shoulder points directly at the character's actual shoulders in image 1. The garment's shoulder line must align with the character's actual shoulder line and must never sit below it. The neckline stays aligned with the character's neck while the shoulders extend outward laterally to reach the character's actual shoulder positions. Use image 1's actual shoulder-to-shoulder width as the reference; do not keep a narrower shoulder width from image 2. The garment may be warped outward at the shoulders while preserving its original design.",
+        "SHOULDER ALIGNMENT AND WIDTH: place the garment's shoulder points directly at the character's actual shoulders in image 1. The garment's shoulder line must align with the character's actual shoulder line and must never sit below it. The neckline stays aligned with the character's neck while the shoulders extend outward laterally to reach the character's actual shoulder positions. Use image 1's actual shoulder-to-shoulder width as the reference; do not keep a narrower shoulder width from image 2. Adapt the garment's cut to image 1's body without stretching, warping, or distorting it; any scaling is uniform and never non-uniform, and the garment keeps natural fabric proportions.",
         "SLEEVE SIZE: keep the sleeves following the character's arms, but make them large enough to cover the character's actual arms. Sleeve width must follow the visible arm width and never be narrower than the arm. Each sleeve extends from the correctly aligned shoulder and arm attachment point along the character's arm to the appropriate wrist or forearm endpoint. Do not make a sleeve smaller merely to preserve the source garment's original proportions.",
-        "OVERALL SIZE AND POSITION: make the garment slightly larger and slightly higher than a plain fit would suggest, as a small controlled adjustment only. Its torso width follows the character's actual torso width, slightly wider where needed to reach the shoulders and arms, and it must not become wider than the corresponding body areas of the character. Do not achieve this by enlarging the whole garment uniformly; expand and warp the shoulder, torso, and sleeve regions independently so each follows its body region.         Do not shift the whole garment markedly upward.",        "Image 1 determines physical size, position, shoulder width, arm width, torso width, and body alignment. Image 2 determines only design, color, material, pattern, construction, and details. Preserve the garment's visual identity while adapting its geometry to image 1.",
+        "OVERALL SIZE AND POSITION: make the garment slightly larger and slightly higher than a plain fit would suggest, as a small controlled adjustment only. Its torso width follows the character's actual torso width, slightly wider where needed to reach the shoulders and arms, and it must not become wider than the corresponding body areas of the character. Do not stretch, warp, or distort any region of the garment to achieve this; keep natural garment proportions and let the cut itself follow each body region.         Do not shift the whole garment markedly upward.",        "Image 1 determines physical size, position, shoulder width, arm width, torso width, and body alignment. Image 2 determines only design, color, material, pattern, construction, and details. Preserve the garment's visual identity while adapting its geometry to image 1.",
         "When unsure about the garment's size because of image 2's cropping or bounding box, prioritize: character geometry, then anatomical landmarks, then garment fit, then reference image scale. Never let the reference image bounding box decide garment size. Keep the garment's design as close to image 2 as possible while adapting its size and placement to the character.",
         "FRONT-FACING DIGITAL DRESS-UP DOLL LAYER: the result is a front-facing 2D clothing layer placed directly on top of the character, behaving like a layer in a digital paper dress-up doll. Generate only the parts of the garment that would be visible when the character is seen straight from the front.",
         "Do not generate a back side of the garment. Do not generate an inner back, lining, inside, or any extra fabric layer that is not visible from the front. Do not generate a complete 3D rendering of the garment. Do not render the garment as a freestanding object or a product photo; convert its design into a clean front-facing layer.",
+        "STANDARDIZATION OF ANY SOURCE PHOTO: image 2 may show the garment worn by a person, on a hanger or stand, flat on a floor, photographed from above or at an angle, with a background, or at any size. In every case, reconstruct the garment as a clean, straight-on, front-facing 2D layer and remove the person, mannequin, hanger, stand, hands, and background completely. Show only the front-visible part of the garment; no body parts, no hidden or inner surfaces, no back side.",
+        "CATEGORY FIT ON THE FIXED MODEL: tops, shirts, and sweaters cover the character's shoulders and torso; jackets cover the shoulders and upper body; dresses run over the character's relevant body length; pants run from the waist down to the ankles; shorts run from the hips to the shorts' own length; skirts run from the hips down to the skirt's own length; socks sit around the ankles and feet; shoes sit exactly on the character's feet. The result is a standardized layer for this fixed model, reusable for every character of the same base type, so do not personalize it beyond that model geometry.",
+        "UNIFORM SCALE ONLY: when adapting the garment to the model, apply proportional scaling; never change the garment's width and height independently, and never stretch or distort it unnaturally. Keep the garment's natural proportions and design.",
+        "FLAT 2D DIGITAL DRESS-UP DOLL LAYER, NOT A 3D GARMENT: the output is a flat 2D digital dress-up doll clothing layer, NOT a complete physical 3D garment. Include ONLY the front-facing visible surface of the garment. The output must represent ONLY what a viewer would see from directly in front of the garment when it is worn on our front-facing digital model. Do NOT include any part of the back of the garment. Do NOT include fabric that wraps around the sides of the body and would only be visible from a side or rear view. Do NOT include back panels, back hems, back collars, back straps, rear sleeves, rear folds, or any hidden garment surfaces. Do NOT reconstruct the garment as a complete 3D object. Do NOT show the garment from an angled perspective. If the original photo shows the back of the garment, a side of the garment, or fabric wrapping around the body, those areas must be excluded from the output. The final asset must look like a flat front-facing clothing piece that could be placed directly on top of a paper/digital dress-up doll.",
+        "FRONT-VIEW RULE: imagine the final DRESSED model standing perfectly straight and facing directly toward the viewer. The clothing asset must be created specifically for that exact front view. Only the garment surfaces that belong to that front view remain; anything that belongs behind the model or around the back of the model must be removed.",
+        "FRONT-VIEW EXAMPLES. Dress: keep the front neckline, front bodice, front sleeves, front skirt, and visible front details such as buttons, patterns, and pockets; remove the back of the dress, back neckline, back straps that would sit behind the model, rear skirt fabric, rear folds, fabric wrapping behind the body, and any hidden surface. Jacket: keep the visible front jacket panels, front collar, front sleeves, and visible front details; do not create a complete jacket wrapped around the model. Pants: keep only the front-facing visible pants surface; no back of the legs, rear pockets, or rear waistband. Shoes: create only the front-facing visible shoe layer positioned for the front-facing model; no complete 3D shoe and no rear or side structure. Socks: keep only the front-visible sock area.",
+        "Do NOT interpret removing the back as simply cropping the original image. Reconstruct the garment into a clean front-facing 2D layer. The final result must NOT look like a photograph of clothing; it must look like a clean digital asset intended to be layered over our front-facing fashion doll.",
+        "MODEL-SCALED CLOTHING: Every clothing asset must be normalized to the fixed DRESSED model's body geometry before being returned. The physical size of the garment in the source photograph, the camera distance, image crop, amount of whitespace, or number of pixels occupied by the garment must NEVER determine the final clothing size. The garment must be proportionally scaled so that its relevant body dimensions fit the fixed model correctly.",
+        "Preserve the garment's natural proportions while scaling it to the model. Scaling must be uniform. Do not independently change width and height. The goal is to make the garment correctly sized for the model, not to reproduce its original pixel dimensions.",
+        "For each category, first identify the relevant body geometry of the fixed DRESSED model and normalize the garment to that geometry: tops, shirts and sweaters: fit the model's torso and shoulder width; jackets: fit the model's shoulder and upper-body width; dresses: fit the model's shoulder/torso width and relevant full-body length; pants: fit the model's waist/hip width and leg geometry; shorts: fit the model's hip width and intended leg length; skirts: fit the model's hip width and intended skirt length; socks: fit the model's ankle and foot geometry; shoes: fit the model's feet. The garment should be large enough to naturally cover the relevant model area, while preserving the garment's actual design and proportions.",
+        "SKIRT SIZING: A skirt must be normalized to the fixed model's hip width. The waistband should span the appropriate width of the model's hips, and the skirt should provide sufficient horizontal coverage across the visible hip area. Do not make the skirt smaller simply because it appears small in the source photograph. Preserve the skirt's actual length and silhouette relative to its normalized width. A mini skirt must remain a mini skirt, a knee-length skirt must remain knee-length, and a long skirt must remain long; only the relevant body width is normalized to the model.",
         "Where an area of the character is covered by the garment from the front, the clothing layer must cover that area directly. The garment's placement must follow the character's front-facing body and its actual landmarks. Keep the garment's colors, pattern, neckline, sleeves, buttons, belts, ruffles, and other design details.",
         "Priority order: 1) the character's size and position determine the garment's size, 2) the garment has the correct physical size on the character, 3) the garment is front-facing and works as a digital layer, 4) the garment follows the character's body position and landmarks, 5) the garment's design and characteristic details are preserved, 6) the output is a transparent PNG of 1024x1536.",
         "Return a transparent 1024x1536 PNG with exactly the same canvas, framing, and pixel coordinate system as image 1, preserving the transparent background.",

@@ -18,13 +18,18 @@ import ProfileTheme from "../components/ProfileTheme.astro";
     <p class="closet-library-message" id="closet-message" role="status" aria-live="polite">
       LOADING YOUR CLOSET...
     </p>
+    <section class="closet-filters" id="closet-filters" aria-label="Filter by category"></section>
     <section class="closet-grid" id="closet-grid" aria-label="Clothing items"></section>
   </main>
 </Layout>
 
 <script>
   import { supabase } from "../lib/supabase";
-  import { categoryLabel, normalizeClothingCategory } from "../lib/shared/clothing-categories";
+  import {
+    categoryLabel,
+    CLOTHING_FILTER_GROUPS,
+    normalizeClothingCategory,
+  } from "../lib/shared/clothing-categories";
   import { CURRENT_CLOTHING_ASSET_VERSION } from "../lib/shared/clothing-assets";
   import {
     confirmAndDeleteWardrobeItem,
@@ -33,6 +38,44 @@ import ProfileTheme from "../components/ProfileTheme.astro";
 
   const grid = document.querySelector<HTMLElement>("#closet-grid")!;
   const message = document.querySelector<HTMLElement>("#closet-message")!;
+  const filterBar = document.querySelector<HTMLElement>("#closet-filters")!;
+  let activeFilter = "all";
+
+  function applyFilter() {
+    const group = CLOTHING_FILTER_GROUPS.find((entry) => entry.value === activeFilter);
+    let visible = 0;
+    grid.querySelectorAll<HTMLElement>(".closet-item").forEach((card) => {
+      const category = normalizeClothingCategory(card.dataset.category) ?? "other";
+      const show = !group?.categories || group.categories.includes(category);
+      card.hidden = !show;
+      if (show) visible += 1;
+    });
+    grid.querySelector(".closet-filter-empty")?.remove();
+    if (visible === 0 && grid.querySelector(".closet-item")) {
+      const empty = document.createElement("p");
+      empty.className = "closet-library-empty closet-filter-empty";
+      empty.textContent = "NO ITEMS IN THIS CATEGORY.";
+      grid.appendChild(empty);
+    }
+    filterBar.querySelectorAll<HTMLButtonElement>("button").forEach((button) => {
+      const active = button.dataset.filter === activeFilter;
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-pressed", String(active));
+    });
+  }
+
+  for (const group of CLOTHING_FILTER_GROUPS) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "closet-filter-button";
+    button.dataset.filter = group.value;
+    button.textContent = group.label;
+    button.addEventListener("click", () => {
+      activeFilter = group.value;
+      applyFilter();
+    });
+    filterBar.appendChild(button);
+  }
 
   function renderEmpty(text: string) {
     grid.replaceChildren();
@@ -69,6 +112,7 @@ import ProfileTheme from "../components/ProfileTheme.astro";
     for (const item of saved.items) {
       const card = document.createElement("article");
       card.className = "closet-item";
+      card.dataset.category = item.category;
 
       const imageFrame = document.createElement("div");
       imageFrame.className = "item-image";
@@ -95,14 +139,12 @@ import ProfileTheme from "../components/ProfileTheme.astro";
       status.className = "closet-readiness";
       status.textContent = [
         `WOMAN — ${
-          item.aiReadyAssets.woman?.generationVersion === CURRENT_CLOTHING_ASSET_VERSION &&
-          item.aiReadyAssets.woman.characterId === saved.primaryCharacterId
+          item.aiReadyAssets.woman?.generationVersion === CURRENT_CLOTHING_ASSET_VERSION
             ? "AI READY"
             : "NOT AI READY"
         }`,
         `MAN — ${
-          item.aiReadyAssets.man?.generationVersion === CURRENT_CLOTHING_ASSET_VERSION &&
-          item.aiReadyAssets.man.characterId === saved.primaryCharacterId
+          item.aiReadyAssets.man?.generationVersion === CURRENT_CLOTHING_ASSET_VERSION
             ? "AI READY"
             : "NOT AI READY"
         }`,
@@ -125,6 +167,7 @@ import ProfileTheme from "../components/ProfileTheme.astro";
             ? `${item.name.toUpperCase()} REMOVED. ${remainingCount} CLOTHING ITEMS REMAIN.`
             : "YOUR CLOSET IS EMPTY.";
           if (!remainingCount) renderEmpty("ADD CLOTHING FROM YOUR PROFILE TO GET STARTED.");
+          else applyFilter();
         })().catch((error) => {
           console.error("Could not delete this clothing item.", error);
           message.textContent = error instanceof Error
@@ -136,6 +179,7 @@ import ProfileTheme from "../components/ProfileTheme.astro";
       card.append(imageFrame, info);
       grid.appendChild(card);
     }
+    applyFilter();
   }
 
   void loadCloset().catch((error) => {
