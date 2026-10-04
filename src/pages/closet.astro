@@ -18,18 +18,25 @@ import ProfileTheme from "../components/ProfileTheme.astro";
     <p class="closet-library-message" id="closet-message" role="status" aria-live="polite">
       LOADING YOUR CLOSET...
     </p>
-    <section class="closet-outfit-builder" aria-label="Create outfit">
-      <strong>CREATE OUTFIT</strong>
-      <small id="outfit-builder-hint">SELECT UP TO 5 AI-READY ITEMS, NAME THE OUTFIT AND SAVE IT.</small>
-      <div class="closet-outfit-form">
-        <input type="text" id="outfit-name" maxlength="80" placeholder="Outfit name, e.g. Clueless" />
-        <button type="button" id="save-outfit" disabled>SAVE OUTFIT (0)</button>
+    <div class="closet-layout">
+      <div class="closet-clothes">
+        <section class="closet-filters" id="closet-filters" aria-label="Filter by category"></section>
+        <section class="closet-grid" id="closet-grid" aria-label="Clothing items"></section>
       </div>
-      <p id="outfit-builder-message" role="status" aria-live="polite"></p>
-      <div class="closet-saved-outfits" id="closet-saved-outfits"></div>
-    </section>
-    <section class="closet-filters" id="closet-filters" aria-label="Filter by category"></section>
-    <section class="closet-grid" id="closet-grid" aria-label="Clothing items"></section>
+      <aside class="closet-outfits-side" aria-label="Saved outfits">
+        <section class="closet-outfit-builder" aria-label="Create outfit">
+          <h2 class="closet-outfits-title">SAVED OUTFITS</h2>
+          <div class="closet-saved-outfits" id="closet-saved-outfits"></div>
+          <strong>CREATE OUTFIT</strong>
+          <small id="outfit-builder-hint">SELECT UP TO 5 AI-READY ITEMS, NAME THE OUTFIT AND SAVE IT.</small>
+          <div class="closet-outfit-form">
+            <input type="text" id="outfit-name" maxlength="80" placeholder="Outfit name, e.g. Clueless" />
+            <button type="button" id="save-outfit" disabled>SAVE OUTFIT (0)</button>
+          </div>
+          <p id="outfit-builder-message" role="status" aria-live="polite"></p>
+        </section>
+      </aside>
+    </div>
   </main>
 </Layout>
 
