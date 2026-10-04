@@ -1,0 +1,778 @@
+---
+import Layout from "../layouts/Layout.astro";
+import "../styles/wardrobe.css";
+import ProfileTheme from "../components/ProfileTheme.astro";
+---
+
+<Layout title="DRESSED — Style Your Character" header="app">
+  <ProfileTheme />
+
+  <div class="wardrobe">
+
+    <section class="wardrobe-screen">
+
+      <div class="wardrobe-toolbar">
+        <span>DRESSED STYLE STUDIO</span>
+        <a href="/closet">OPEN CLOSET LIBRARY →</a>
+      </div>
+
+      <div class="wardrobe-main">
+
+        <div class="model-area">
+          <div class="model-window">
+            <div class="model-window-header">
+              <span>MY DRESSED CHARACTER</span>
+              <span>♡</span>
+            </div>
+            <div class="wardrobe-model" id="wardrobe-model">
+              <div class="wardrobe-model-empty">
+                <span>♙</span>
+                <p>NO PERSONAL PHOTO YET</p>
+                <a href="/profile">UPLOAD PHOTO</a>
+              </div>
+            </div>
+            <div class="model-status" id="model-status">
+              NO DRESSED CHARACTER YET
+            </div>
+          </div>
+        </div>
+
+        <aside class="clothing-panel" aria-label="Clothing and accessories">
+          <section class="style-panel">
+            <div class="style-panel-title">
+              <span>CLOTHING</span>
+              <span>♡</span>
+            </div>
+            <div class="category-list" aria-label="Filter clothing by category">
+              <button class="category-button category-button--active" type="button" data-category="ALL" aria-pressed="true">
+                ALL
+              </button>
+            </div>
+            <a href="/profile" class="upload-link">MANAGE CLOTHING IN PROFILE</a>
+          </section>
+
+          <section class="clothing-area" aria-label="Clothing items">
+            <div class="clothing-heading">
+              <span id="clothing-heading">ALL ITEMS</span>
+            </div>
+            <div class="clothing-grid" id="clothing-grid" aria-live="polite"></div>
+          </section>
+        </aside>
+
+        <aside class="outfit-panel" aria-label="Outfit tools">
+          <section class="outfit-bar">
+            <div class="outfit-summary">
+              <label class="outfit-label" for="outfit-name">SELECTED ITEMS</label>
+              <input id="outfit-name" type="text" value="UNTITLED OUTFIT" maxlength="60" />
+              <div class="current-outfit-items" id="current-outfit-items">
+                <p class="outfit-empty">Select clothes to start your outfit.</p>
+              </div>
+            </div>
+
+            <div class="outfit-actions">
+              <button type="button" id="save-outfit">SAVE OUTFIT</button>
+              <button type="button" id="apply-outfit">APPLY OUTFIT</button>
+              <button type="button" id="clear-outfit">CLEAR OUTFIT</button>
+              <p class="outfit-message" id="outfit-message" role="status" aria-live="polite"></p>
+            </div>
+          </section>
+        </aside>
+
+      </div>
+
+      <section class="saved-outfits" aria-labelledby="saved-outfits-heading">
+        <h2 id="saved-outfits-heading">SAVED BROWSER OUTFITS</h2>
+        <div class="saved-outfits-grid" id="saved-outfits-grid" aria-live="polite"></div>
+        <h2 id="saved-ai-results-heading">AI TRY-ON RESULTS</h2>
+        <div class="saved-outfits-grid" id="saved-ai-results-grid" aria-live="polite"></div>
+      </section>
+
+    </section>
+
+  </div>
+
+</Layout>
+
+<script>
+  import { supabase } from "../lib/supabase";
+  import {
+    CLOTHING_CATEGORIES,
+    normalizeClothingCategory,
+    categoryLabel,
+    clothingLayerOrder,
+  } from "../lib/shared/clothing-categories";
+  import {
+    CURRENT_CLOTHING_ASSET_VERSION,
+    type ClothingBaseAsset,
+    type ClothingBaseType,
+  } from "../lib/shared/clothing-assets";
+  import { DRESSED_GEOMETRY_CONTRACT_VERSION } from "../lib/shared/clothing-geometry";
+  import {
+    readDressedCharacterCache,
+    cacheDressedCharacter,
+  } from "../lib/client/dressed-character";
+  import {
+    deleteSavedDressedOutfit,
+    loadSavedDressedOutfits,
+    loadPersistentWardrobe,
+    saveDressedOutfit,
+    type SavedDressedOutfit,
+    type SavedWardrobeResult,
+  } from "../lib/client/wardrobe-ai";
+
+  type WardrobeItem = {
+    id: string;
+    name: string;
+    category: string;
+    originalPath?: string;
+    originalPreviewUrl?: string;
+    referencePath?: string;
+    previewUrl?: string;
+    cleanPreviewUrl?: string;
+    generationVersion?: number | null;
+    baseType?: ClothingBaseType;
+    aiReadyAssets?: Partial<Record<ClothingBaseType, ClothingBaseAsset>>;
+  };
+
+  const wardrobeModel =
+    document.querySelector("#wardrobe-model") as HTMLElement;
+
+  const modelStatus =
+    document.querySelector("#model-status") as HTMLElement;
+
+  const clothingGrid =
+    document.querySelector("#clothing-grid") as HTMLElement;
+
+  const clothingHeading =
+    document.querySelector("#clothing-heading") as HTMLElement;
+
+  const currentOutfitItems =
+    document.querySelector("#current-outfit-items") as HTMLElement;
+
+  const outfitMessage =
+    document.querySelector("#outfit-message") as HTMLElement;
+
+  const categoryButtons =
+    document.querySelector(".category-list") as HTMLElement;
+
+  const savedOutfitsGrid =
+    document.querySelector("#saved-outfits-grid") as HTMLElement;
+
+  const savedAiResultsGrid =
+    document.querySelector("#saved-ai-results-grid") as HTMLElement;
+
+  let activeCategory = "ALL";
+  let clothingItems: WardrobeItem[] = [];
+  let selectedItems: WardrobeItem[] = [];
+  let filterButtons: HTMLButtonElement[] = [];
+  let primaryCharacterBaseType: ClothingBaseType | null = null;
+  let activeCharacterId: string | null = null;
+
+  function moveSelectedItem(itemId: string, direction: "up" | "down") {
+    const currentIndex = selectedItems.findIndex((item) => item.id === itemId);
+    const targetIndex = direction === "up" ? currentIndex + 1 : currentIndex - 1;
+    if (currentIndex < 0 || targetIndex < 0 || targetIndex >= selectedItems.length) return;
+    [selectedItems[currentIndex], selectedItems[targetIndex]] =
+      [selectedItems[targetIndex], selectedItems[currentIndex]];
+    renderCurrentOutfit();
+  }
+
+  function addSelectedItem(item: WardrobeItem) {
+    const insertAt = selectedItems.findIndex(
+      (selected) => clothingLayerOrder(selected.category) > clothingLayerOrder(item.category)
+    );
+    if (insertAt === -1) selectedItems.push(item);
+    else selectedItems.splice(insertAt, 0, item);
+  }
+
+  function setCharacterImage(source: string, alt: string) {
+    const canvas = document.createElement("div");
+    canvas.className = "dressed-canvas";
+    const base = document.createElement("img");
+    base.className = "dressed-character-base";
+    base.src = source;
+    base.alt = alt;
+    canvas.appendChild(base);
+    const layers = document.createElement("div");
+    layers.className = "dressed-clothing-layers";
+    layers.setAttribute("aria-hidden", "true");
+    canvas.appendChild(layers);
+    wardrobeModel.replaceChildren(canvas);
+    renderCharacterLayers();
+  }
+
+  function renderCharacterLayers() {
+    const layers = wardrobeModel.querySelector<HTMLElement>(".dressed-clothing-layers");
+    if (!layers) return;
+    layers.replaceChildren();
+    const baseType = primaryCharacterBaseType;
+    if (!baseType) return;
+
+    selectedItems
+      .map((item) => ({
+        item,
+        asset: item.aiReadyAssets?.[baseType],
+      }))
+      .filter(({ asset }) =>
+        asset?.generationVersion === CURRENT_CLOTHING_ASSET_VERSION &&
+        asset.characterId === activeCharacterId &&
+        Boolean(asset.referencePath && asset.previewUrl)
+      )
+      .forEach(({ item, asset }, index) => {
+        const layer = document.createElement("img");
+        layer.className = "dressed-clothing-layer";
+        layer.src = asset!.previewUrl;
+        layer.alt = "";
+        layer.dataset.itemId = item.id;
+        layer.style.zIndex = String(index + 1);
+        layers.appendChild(layer);
+      });
+  }
+
+  function isSafeImage(value: string) {
+    return value.startsWith("data:image/") ||
+      value.startsWith("https://") ||
+      value.startsWith("http://");
+  }
+
+  function renderCategoryFilters() {
+    for (const category of CLOTHING_CATEGORIES) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "category-button";
+      button.dataset.category = category.value.toUpperCase();
+      button.textContent = category.label.toUpperCase();
+      button.setAttribute("aria-pressed", "false");
+      categoryButtons.appendChild(button);
+    }
+    filterButtons = Array.from(categoryButtons.querySelectorAll<HTMLButtonElement>(".category-button"));
+    filterButtons.forEach((button) => {
+      button.addEventListener("click", () => {
+        activeCategory = button.dataset.category || "ALL";
+        filterButtons.forEach((candidate) => {
+          const active = candidate === button;
+          candidate.classList.toggle("category-button--active", active);
+          candidate.setAttribute("aria-pressed", String(active));
+        });
+        renderClothingItems();
+      });
+    });
+  }
+
+  function loadLegacySourcePhoto() {
+    const sourcePhoto = localStorage.getItem("closet-source-photo");
+
+    if (!sourcePhoto || !isSafeImage(sourcePhoto)) {
+      modelStatus.textContent = "NO DRESSED CHARACTER YET";
+      return;
+    }
+
+    setCharacterImage(sourcePhoto, "Uploaded source photo (not an AI-generated model)");
+    modelStatus.textContent = "UPLOADED SOURCE PHOTO — NOT AN AI MODEL";
+  }
+
+  async function loadPrimaryCharacter() {
+    if (!supabase) return;
+    const { data: session, error: sessionError } = await supabase.auth.getSession();
+    if (sessionError || !session.session) return;
+    const userId = session.session.user.id;
+    const { data: profile, error } = await supabase
+      .from("profiles")
+      .select("gender, model_photo_path, source_photo_path")
+      .eq("user_id", userId)
+      .maybeSingle();
+    if (error) {
+      console.error("Could not load the primary DRESSED character.", error);
+      modelStatus.textContent = "COULD NOT LOAD YOUR DRESSED CHARACTER.";
+      return;
+    }
+    const { data: primaryCharacter, error: characterError } = await supabase
+      .from("dressed_characters")
+      .select("id, gender, model_path, geometry_contract_version")
+      .eq("user_id", userId)
+      .eq("is_primary", true)
+      .maybeSingle();
+    if (characterError) {
+      console.error("Could not load the saved primary DRESSED character.", characterError);
+      modelStatus.textContent = "COULD NOT LOAD YOUR DRESSED CHARACTER.";
+      return;
+    }
+    if (
+      primaryCharacter &&
+      primaryCharacter.geometry_contract_version !== DRESSED_GEOMETRY_CONTRACT_VERSION
+    ) {
+      modelStatus.textContent =
+        "THIS CHARACTER USES LEGACY BODY GEOMETRY. GENERATE A NEW CHARACTER TO USE AI-READY CLOTHING.";
+      return;
+    }
+    if (primaryCharacter && !primaryCharacter.model_path.startsWith(`${userId}/`)) {
+      console.error("The primary DRESSED character has an invalid image path.");
+      modelStatus.textContent = "YOUR PRIMARY DRESSED CHARACTER IMAGE IS INVALID.";
+      return;
+    }
+    if (!primaryCharacter && profile?.model_photo_path) {
+      modelStatus.textContent =
+        "GENERATE A NEW CHARACTER ON YOUR PROFILE TO USE GEOMETRY-COMPATIBLE AI-READY CLOTHING.";
+      return;
+    }
+    const profileGender =
+      profile?.gender === "woman" || profile?.gender === "man" ? profile.gender : null;
+    if (
+      profileGender &&
+      primaryCharacter &&
+      primaryCharacter.gender !== profileGender
+    ) {
+      console.error("The primary character does not match the locked profile model type.");
+      modelStatus.textContent = "YOUR SAVED CHARACTER DOES NOT MATCH YOUR MODEL TYPE.";
+      return;
+    }
+    const characterGender =
+      profileGender ??
+      (primaryCharacter?.gender === "woman" || primaryCharacter?.gender === "man"
+        ? primaryCharacter.gender
+        : null);
+    primaryCharacterBaseType =
+      primaryCharacter?.gender === "woman" || primaryCharacter?.gender === "man"
+        ? primaryCharacter.gender
+        : null;
+    activeCharacterId = primaryCharacter?.id ?? null;
+    const modelPhotoPath = primaryCharacter?.model_path ?? null;
+
+    if (modelPhotoPath) {
+      const cache = readDressedCharacterCache();
+      const cachedImage =
+        cache &&
+        cache.modelPhotoPath === modelPhotoPath &&
+        cache.gender === characterGender
+          ? cache.imageDataUrl
+          : null;
+      if (cachedImage) {
+        setCharacterImage(cachedImage, "Your saved DRESSED character");
+        modelStatus.textContent = "YOUR PRIMARY DRESSED CHARACTER IS READY.";
+        return;
+      }
+      const { data: signed, error: signedError } = await supabase.storage
+        .from("model-images")
+        .createSignedUrl(modelPhotoPath, 60 * 60);
+      if (signedError || !signed) {
+        console.error("Could not create a private character preview URL.", signedError);
+        modelStatus.textContent = "COULD NOT LOAD YOUR DRESSED CHARACTER.";
+        return;
+      }
+      setCharacterImage(signed.signedUrl, "Your saved DRESSED character");
+      modelStatus.textContent = "YOUR PRIMARY DRESSED CHARACTER IS READY.";
+      if (characterGender) {
+        void cacheDressedCharacter({
+          signedUrl: signed.signedUrl,
+          modelPhotoPath,
+          gender: characterGender,
+        });
+      }
+      return;
+    }
+    if (profile?.source_photo_path?.startsWith(`${userId}/`)) {
+      const { data: signed, error: signedError } = await supabase.storage
+        .from("profile-images")
+        .createSignedUrl(profile.source_photo_path, 60 * 60);
+      if (!signedError && signed) {
+        setCharacterImage(signed.signedUrl, "Uploaded source photo (not a DRESSED character)");
+        modelStatus.textContent = "SOURCE PHOTO SAVED — GENERATE YOUR CHARACTER ON PROFILE.";
+        return;
+      }
+      console.error("Could not create a private source-photo preview URL.", signedError);
+    }
+    loadLegacySourcePhoto();
+  }
+
+  function renderCurrentOutfit() {
+    currentOutfitItems.replaceChildren();
+
+    if (selectedItems.length === 0) {
+      const emptyMessage = document.createElement("p");
+      emptyMessage.className = "outfit-empty";
+      emptyMessage.textContent = "Select clothes above to start your outfit.";
+      currentOutfitItems.appendChild(emptyMessage);
+      renderCharacterLayers();
+      return;
+    }
+
+    selectedItems.forEach((item) => {
+      const outfitItem = document.createElement("div");
+      outfitItem.className = "current-outfit-item";
+
+      const imageSource = item.cleanPreviewUrl || item.originalPreviewUrl;
+      if (imageSource) {
+        const image = document.createElement("img");
+        image.src = imageSource;
+        image.alt = "";
+        image.loading = "lazy";
+        outfitItem.appendChild(image);
+      } else {
+        const noImage = document.createElement("span");
+        noImage.className = "outfit-no-image";
+        noImage.textContent = "NO IMAGE";
+        outfitItem.appendChild(noImage);
+      }
+
+      const itemName = document.createElement("span");
+      itemName.className = "current-outfit-item-name";
+      itemName.textContent = item.name;
+
+      const layerIndex = selectedItems.findIndex((selected) => selected.id === item.id);
+      const layerControls = document.createElement("div");
+      layerControls.className = "outfit-layer-controls";
+
+      const moveUpButton = document.createElement("button");
+      moveUpButton.type = "button";
+      moveUpButton.className = "move-outfit-item";
+      moveUpButton.textContent = "↑";
+      moveUpButton.disabled = layerIndex === selectedItems.length - 1;
+      moveUpButton.setAttribute("aria-label", `Move ${item.name} up one clothing layer`);
+      moveUpButton.title = "Move layer up";
+      moveUpButton.addEventListener("click", () => moveSelectedItem(item.id, "up"));
+
+      const moveDownButton = document.createElement("button");
+      moveDownButton.type = "button";
+      moveDownButton.className = "move-outfit-item";
+      moveDownButton.textContent = "↓";
+      moveDownButton.disabled = layerIndex === 0;
+      moveDownButton.setAttribute("aria-label", `Move ${item.name} down one clothing layer`);
+      moveDownButton.title = "Move layer down";
+      moveDownButton.addEventListener("click", () => moveSelectedItem(item.id, "down"));
+
+      const removeButton = document.createElement("button");
+      removeButton.type = "button";
+      removeButton.className = "remove-outfit-item";
+      removeButton.textContent = "×";
+      removeButton.setAttribute("aria-label", `Remove ${item.name} from current outfit`);
+      removeButton.addEventListener("click", () => {
+        selectedItems = selectedItems.filter((selected) => selected.id !== item.id);
+        renderCurrentOutfit();
+        renderClothingItems();
+      });
+
+      layerControls.append(moveUpButton, moveDownButton, removeButton);
+      outfitItem.append(itemName, layerControls);
+      currentOutfitItems.appendChild(outfitItem);
+    });
+    renderCharacterLayers();
+  }
+
+  function renderClothingItems() {
+    const visibleItems = activeCategory === "ALL"
+      ? clothingItems
+      : clothingItems.filter((item) => item.category === activeCategory);
+
+    clothingHeading.textContent = activeCategory === "ALL"
+      ? "ALL ITEMS"
+      : activeCategory;
+    clothingGrid.replaceChildren();
+
+    if (visibleItems.length === 0) {
+      const emptyMessage = document.createElement("div");
+      emptyMessage.className = "clothing-empty";
+
+      const message = document.createElement("p");
+      message.textContent = clothingItems.length === 0 && activeCategory === "ALL"
+        ? "YOUR CLOSET IS EMPTY"
+        : "NO ITEMS IN THIS CATEGORY";
+
+      const link = document.createElement("a");
+      link.href = "/profile";
+      link.textContent = "ADD CLOTHING IN YOUR PROFILE";
+
+      emptyMessage.append(message, link);
+      clothingGrid.appendChild(emptyMessage);
+      return;
+    }
+
+    visibleItems.forEach((item) => {
+      const card = document.createElement("article");
+      card.className = "clothing-item";
+
+      if (selectedItems.some((selected) => selected.id === item.id)) {
+        card.classList.add("clothing-item--selected");
+      }
+
+      const imageSource = item.cleanPreviewUrl || item.originalPreviewUrl;
+      if (imageSource) {
+        const image = document.createElement("img");
+        image.className = "clothing-item-image";
+        image.src = imageSource;
+        image.alt = item.name;
+        image.loading = "lazy";
+        card.appendChild(image);
+      } else {
+        const noImage = document.createElement("span");
+        noImage.className = "clothing-item-no-image";
+        noImage.textContent = "NO IMAGE";
+        card.appendChild(noImage);
+      }
+
+      const category = document.createElement("small");
+      category.className = "clothing-item-category";
+      const normalizedCategory = normalizeClothingCategory(item.category) ?? "other";
+      category.textContent = categoryLabel(normalizedCategory).toUpperCase();
+
+      const name = document.createElement("strong");
+      name.className = "clothing-item-name";
+      name.textContent = item.name;
+      const readiness = document.createElement("small");
+      readiness.className = "clothing-item-readiness";
+      const activeAsset = primaryCharacterBaseType
+        ? item.aiReadyAssets?.[primaryCharacterBaseType]
+        : undefined;
+      const isReady = Boolean(
+        activeAsset?.referencePath &&
+        activeAsset.previewUrl &&
+        activeAsset.generationVersion === CURRENT_CLOTHING_ASSET_VERSION
+      );
+      readiness.textContent = isReady
+        ? "AI-READY FOR CURRENT CHARACTER"
+        : "NOT AI-READY FOR CURRENT CHARACTER — PREPARE IN PROFILE";
+
+      const selectButton = document.createElement("button");
+      selectButton.type = "button";
+      selectButton.className = "clothing-item-select";
+      const isSelected = selectedItems.some((selected) => selected.id === item.id);
+      selectButton.textContent = isSelected ? "REMOVE" : "ADD";
+      selectButton.setAttribute("aria-pressed", String(isSelected));
+      selectButton.disabled = !isReady;
+      selectButton.addEventListener("click", () => {
+        if (isSelected) {
+          selectedItems = selectedItems.filter((selected) => selected.id !== item.id);
+        } else {
+          if (selectedItems.length >= 5) {
+            outfitMessage.textContent = "CHOOSE UP TO FIVE ITEMS FOR ONE OUTFIT.";
+            return;
+          }
+          addSelectedItem(item);
+        }
+
+        outfitMessage.textContent = "";
+        renderCurrentOutfit();
+        renderClothingItems();
+      });
+
+      card.append(category, name, readiness);
+      card.appendChild(selectButton);
+      clothingGrid.appendChild(card);
+    });
+  }
+
+  document.querySelector("#save-outfit")?.addEventListener("click", () => {
+    void (async () => {
+      if (!selectedItems.length) {
+        outfitMessage.textContent = "ADD AT LEAST ONE AI-READY ITEM BEFORE SAVING.";
+        return;
+      }
+      const nameInput = document.querySelector<HTMLInputElement>("#outfit-name");
+      const name = nameInput?.value.trim() ?? "";
+      if (!name || name.length > 80) {
+        outfitMessage.textContent = "ENTER AN OUTFIT NAME BETWEEN 1 AND 80 CHARACTERS.";
+        return;
+      }
+      if (!supabase) throw new Error("SUPABASE IS NOT CONFIGURED.");
+      const { data: session, error } = await supabase.auth.getSession();
+      const accessToken = session.session?.access_token;
+      if (error || !accessToken) throw new Error("PLEASE LOG IN AGAIN BEFORE SAVING AN OUTFIT.");
+      const outfit = await saveDressedOutfit(
+        accessToken,
+        name,
+        selectedItems.map(({ id }) => id)
+      );
+      savedDressedOutfits = [
+        outfit,
+        ...savedDressedOutfits.filter((saved) => saved.id !== outfit.id),
+      ];
+      renderSavedOutfits();
+      outfitMessage.textContent = `${outfit.name.toUpperCase()} SAVED.`;
+    })().catch((error) => {
+      console.error("Could not save the DRESSED outfit.", error);
+      outfitMessage.textContent = error instanceof Error
+        ? error.message
+        : "COULD NOT SAVE THIS OUTFIT.";
+    });
+  });
+
+  function renderSavedAiResults(results: SavedWardrobeResult[]) {
+    savedAiResultsGrid.replaceChildren();
+    if (results.length === 0) {
+      const empty = document.createElement("p");
+      empty.className = "saved-outfits-empty";
+      empty.textContent = "NO AI TRY-ON RESULTS YET.";
+      savedAiResultsGrid.appendChild(empty);
+      return;
+    }
+    for (const result of results) {
+      const card = document.createElement("article");
+      card.className = "saved-outfit-card";
+      const image = document.createElement("img");
+      image.src = result.previewUrl;
+      image.alt = "AI try-on result";
+      image.loading = "lazy";
+      const date = document.createElement("small");
+      date.textContent = new Date(result.createdAt).toLocaleDateString();
+      card.append(image, date);
+      savedAiResultsGrid.appendChild(card);
+    }
+  }
+
+  let savedDressedOutfits: SavedDressedOutfit[] = [];
+
+  function renderSavedOutfits() {
+    savedOutfitsGrid.replaceChildren();
+    const relevantOutfits = savedDressedOutfits.filter((outfit) =>
+      outfit.characterId === activeCharacterId &&
+      outfit.baseType === primaryCharacterBaseType
+    );
+    if (relevantOutfits.length === 0) {
+      const empty = document.createElement("p");
+      empty.className = "saved-outfits-empty";
+      empty.textContent = "NO BROWSER-COMPOSED OUTFITS SAVED FOR THIS CHARACTER.";
+      savedOutfitsGrid.appendChild(empty);
+      return;
+    }
+    for (const outfit of relevantOutfits) {
+      const card = document.createElement("article");
+      card.className = "saved-outfit-card";
+      const name = document.createElement("strong");
+      name.textContent = outfit.name;
+      const itemNames = outfit.itemIds.map((id) =>
+        clothingItems.find((item) => item.id === id)?.name ?? "Unavailable clothing item"
+      );
+      const summary = document.createElement("small");
+      summary.textContent = itemNames.join(" · ");
+      const actions = document.createElement("div");
+      actions.className = "saved-outfit-actions";
+      const loadButton = document.createElement("button");
+      loadButton.type = "button";
+      loadButton.className = "clothing-item-select";
+      loadButton.textContent = "LOAD OUTFIT";
+      loadButton.disabled = outfit.itemIds.length > 5 ||
+        outfit.itemIds.some((id) => {
+          const item = clothingItems.find((candidate) => candidate.id === id);
+          const asset = item?.aiReadyAssets?.[outfit.baseType];
+          return !item ||
+            asset?.generationVersion !== CURRENT_CLOTHING_ASSET_VERSION ||
+            asset.characterId !== outfit.characterId;
+        });
+      loadButton.addEventListener("click", () => {
+        selectedItems = outfit.itemIds.map((id) =>
+          clothingItems.find((item) => item.id === id)!
+        );
+        renderCurrentOutfit();
+        renderClothingItems();
+        outfitMessage.textContent = `${outfit.name.toUpperCase()} LOADED.`;
+      });
+      const deleteButton = document.createElement("button");
+      deleteButton.type = "button";
+      deleteButton.className = "remove-outfit-item";
+      deleteButton.textContent = "DELETE";
+      deleteButton.addEventListener("click", () => {
+        void (async () => {
+          if (!supabase) throw new Error("SUPABASE IS NOT CONFIGURED.");
+          const { data: session, error } = await supabase.auth.getSession();
+          const accessToken = session.session?.access_token;
+          if (error || !accessToken) throw new Error("PLEASE LOG IN AGAIN.");
+          if (!await deleteSavedDressedOutfit(accessToken, outfit)) return;
+          savedDressedOutfits = savedDressedOutfits.filter(({ id }) => id !== outfit.id);
+          renderSavedOutfits();
+          outfitMessage.textContent = `${outfit.name.toUpperCase()} DELETED.`;
+        })().catch((error) => {
+          console.error("Could not delete the saved DRESSED outfit.", error);
+          outfitMessage.textContent = error instanceof Error
+            ? error.message
+            : "COULD NOT DELETE THE SAVED OUTFIT.";
+        });
+      });
+      actions.append(loadButton, deleteButton);
+      card.append(name, summary, actions);
+      savedOutfitsGrid.appendChild(card);
+    }
+  }
+
+  const applyOutfitButton = document.querySelector<HTMLButtonElement>("#apply-outfit");
+  const clearOutfitButton = document.querySelector<HTMLButtonElement>("#clear-outfit");
+
+  clearOutfitButton?.addEventListener("click", () => {
+    selectedItems = [];
+    outfitMessage.textContent = "";
+    renderCurrentOutfit();
+    renderClothingItems();
+  });
+
+  applyOutfitButton?.addEventListener("click", () => {
+    renderCharacterLayers();
+    outfitMessage.textContent = selectedItems.length
+      ? "OUTFIT APPLIED TO YOUR CHARACTER."
+      : "ADD AI-READY ITEMS TO BUILD AN OUTFIT.";
+  });
+
+  async function initializeWardrobe() {
+    renderCategoryFilters();
+    renderCurrentOutfit();
+    renderClothingItems();
+    if (!supabase) return;
+    const { data: session, error } = await supabase.auth.getSession();
+    const accessToken = session.session?.access_token;
+    if (error || !accessToken) return;
+    await loadPrimaryCharacter();
+    const saved = await loadPersistentWardrobe(accessToken);
+    savedDressedOutfits = await loadSavedDressedOutfits(accessToken);
+    clothingItems = saved.items.map((stored) => ({
+      id: stored.id,
+      name: stored.name,
+      category: stored.category.toUpperCase(),
+      referencePath: stored.referencePath ?? undefined,
+      previewUrl: stored.previewUrl ?? undefined,
+      cleanPreviewUrl: stored.cleanPreviewUrl ?? undefined,
+      generationVersion: stored.generationVersion,
+      baseType: stored.baseType ?? undefined,
+      aiReadyAssets: stored.aiReadyAssets,
+      originalPath: stored.originalPath ?? undefined,
+      originalPreviewUrl: stored.originalPreviewUrl ?? undefined,
+    }));
+    selectedItems = selectedItems.filter((selected) =>
+      clothingItems.some((item) => item.id === selected.id)
+    );
+    renderClothingItems();
+    renderCurrentOutfit();
+    renderSavedOutfits();
+    renderSavedAiResults(saved.results);
+  }
+  void initializeWardrobe().catch((error) => {
+    console.error("Could not initialize the DRESSED wardrobe.", error);
+    outfitMessage.textContent = "COULD NOT LOAD YOUR CLOSET DATA.";
+  });
+</script>
+
+<script>
+  import { supabase } from "../lib/supabase";
+
+  const checkWardrobeSession = async () => {
+    if (!supabase) {
+      window.location.replace("/login?reason=config");
+      return;
+    }
+
+    try {
+      const { data, error } = await supabase.auth.getSession();
+
+      if (error) {
+        console.error("Could not verify the wardrobe session.", error);
+        window.location.replace("/login?reason=session");
+        return;
+      }
+
+      if (!data.session) {
+        window.location.replace("/login");
+      }
+    } catch (error) {
+      console.error("Unexpected error while verifying the wardrobe session.", error);
+      window.location.replace("/login?reason=session");
+    }
+  };
+
+  void checkWardrobeSession();
+</script>

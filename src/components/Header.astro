@@ -1,0 +1,98 @@
+---
+interface Props {
+  variant?: "public" | "app";
+}
+
+const { variant = "public" } = Astro.props;
+---
+
+{variant === "public" ? (
+  <header class="site-header site-header--public">
+    <a href="/" class="site-logo">CLOSET</a>
+
+    <nav class="site-nav" aria-label="Main navigation">
+      <a href="/#how-it-works">HOW IT WORKS</a>
+      <a href="/#about">ABOUT</a>
+    </nav>
+
+    <a href="/login" class="header-button">
+      LOG IN <span>↗</span>
+    </a>
+  </header>
+) : (
+  <header class="site-header site-header--app">
+    <div class="app-title">
+      <span class="app-heart">♡</span>
+      <a href="/wardrobe">DRESSED Duh'</a>
+    </div>
+
+    <nav class="app-menu" aria-label="Application menu">
+      <a href="/profile">PROFILE</a>
+      <a href="/closet">CLOSET</a>
+    </nav>
+
+    <div class="app-actions">
+
+      <a href="/profile" class="app-profile">
+        <span class="profile-icon">♙</span>
+        PROFILE
+      </a>
+
+      <button
+        type="button"
+        class="app-logout"
+        id="logout"
+      >
+        ↪ LOG OUT
+      </button>
+      <span class="app-auth-status" id="logout-status" role="status" aria-live="polite"></span>
+
+    </div>
+
+    <div class="window-controls" aria-hidden="true">
+      <span>−</span>
+      <span>□</span>
+      <span>×</span>
+    </div>
+  </header>
+)}
+
+<script>
+  import { supabase } from "../lib/supabase";
+
+  const logoutButton =
+    document.querySelector("#logout") as HTMLButtonElement;
+
+  const logoutStatus =
+    document.querySelector("#logout-status") as HTMLElement;
+
+  logoutButton?.addEventListener("click", async () => {
+    logoutStatus.textContent = "";
+
+    if (!supabase) {
+      logoutStatus.textContent = "AUTH IS NOT CONFIGURED.";
+      return;
+    }
+
+    logoutButton.disabled = true;
+    logoutButton.textContent = "LOGGING OUT...";
+
+    try {
+      const { error } = await supabase.auth.signOut();
+
+      if (error) {
+        console.error("Supabase logout failed.", error);
+        logoutStatus.textContent = "COULDN'T LOG OUT. PLEASE TRY AGAIN.";
+        return;
+      }
+
+      window.location.href = "/login";
+    } catch (error) {
+      console.error("Unexpected error while logging out.", error);
+      logoutStatus.textContent = "COULDN'T LOG OUT. PLEASE TRY AGAIN.";
+    } finally {
+      logoutButton.disabled = false;
+      logoutButton.textContent = "↪ LOG OUT";
+    }
+  });
+</script>

@@ -1,0 +1,42 @@
+:root,
+:root[data-profile-theme="woman"] {
+  --pink-100: #fff0f6;
+  --pink-200: #ffd7e7;
+  --pink-300: #ffb5d2;
+  --pink-400: #f77eae;
+  --pink-500: #ed4f8e;
+  --pink-600: #d93676;
+  --profile-theme-background: #ffdce9;
+  --profile-theme-bg: #f7e8ef;
+  --profile-header-mid: #f982b0;
+  --profile-header-end: #ed6599;
+}
+
+:root[data-profile-theme="man"] {
+  --pink-100: #eff7ff;
+  --pink-200: #d9ebff;
+  --pink-300: #b5d9ff;
+  --pink-400: #7eb7f7;
+  --pink-500: #4f95ed;
+  --pink-600: #3676d9;
+  --profile-theme-background: #dcecff;
+  --profile-theme-bg: #e8f2fb;
+  --profile-header-mid: #82b8f9;
+  --profile-header-end: #6599ed;
+}
+
+body {
+  background:
+    radial-gradient(circle at 15% 15%, var(--profile-theme-background) 0 8%, transparent 25%),
+    radial-gradient(circle at 85% 80%, #e8ddff 0 8%, transparent 25%),
+    var(--profile-theme-bg);
+}
+
+.site-header--app {
+  background: linear-gradient(
+    180deg,
+    var(--pink-300) 0%,
+    var(--profile-header-mid) 48%,
+    var(--profile-header-end) 100%
+  );
+}

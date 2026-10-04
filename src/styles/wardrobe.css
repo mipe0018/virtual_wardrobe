@@ -1,0 +1,860 @@
+.wardrobe {
+  width: min(1400px, calc(100% - 2rem));
+  margin: 2.5rem auto 4rem;
+}
+
+.clothing-item-select,
+.prepare-item-button {
+  width: 100%;
+  padding: 0.55rem;
+  border: 1px solid var(--border);
+  background: var(--pink-100);
+  color: var(--grey-900);
+  font-family: "DM Mono", monospace;
+  font-size: 0.58rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.prepare-item-button {
+  background: var(--pink-300);
+}
+
+.clothing-item-select:hover,
+.prepare-item-button:hover {
+  background: var(--pink-400);
+}
+
+.wardrobe-screen {
+  overflow: hidden;
+  border: 3px solid var(--border);
+  background: var(--cream);
+  box-shadow: var(--pixel-shadow);
+}
+
+.saved-outfits {
+  margin-top: 2rem;
+}
+
+.saved-outfits h2 {
+  margin: 0 0 1rem;
+  font-family: "DM Mono", monospace;
+  font-size: 0.75rem;
+}
+
+.saved-outfits-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(145px, 1fr));
+  gap: 1rem;
+}
+
+.saved-outfit-card {
+  padding: 0.5rem;
+  display: grid;
+  gap: 0.5rem;
+  border: 2px solid var(--border);
+  background: var(--white);
+}
+
+.saved-outfit-card img {
+  width: 100%;
+  height: 220px;
+  object-fit: contain;
+  background: var(--cream);
+}
+
+.saved-outfit-card small,
+.saved-outfits-empty {
+  color: var(--grey-500);
+  font-family: "DM Mono", monospace;
+  font-size: 0.6rem;
+}
+
+.saved-outfit-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.saved-outfit-actions button {
+  min-height: 2rem;
+  padding: 0.35rem 0.5rem;
+  font-family: "DM Mono", monospace;
+  font-size: 0.6rem;
+}
+
+.wardrobe-toolbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.85rem 1rem;
+  border-bottom: 2px solid var(--border);
+  background: var(--pink-300);
+  font-family: "DM Mono", monospace;
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+.wardrobe-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 250px;
+  gap: 1.5rem;
+  padding: 1.5rem;
+}
+
+.model-area,
+.model-window,
+.style-panel {
+  min-width: 0;
+}
+
+.model-window {
+  overflow: hidden;
+  border: 2px solid var(--border);
+  background: var(--white);
+}
+
+.model-window-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.7rem 1rem;
+  background: var(--pink-200);
+  border-bottom: 2px solid var(--border);
+  font-family: "DM Mono", monospace;
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.wardrobe-model {
+  min-height: 420px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  overflow: hidden;
+  background: var(--pink-100);
+}
+
+.wardrobe-model img {
+  width: 100%;
+  max-height: 560px;
+  height: 420px;
+  object-fit: contain;
+}
+
+.wardrobe-model-empty {
+  max-width: calc(100% - 2rem);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+
+.wardrobe-model-empty span {
+  font-size: 5rem;
+  color: var(--pink-400);
+}
+
+.wardrobe-model-empty p {
+  max-width: 100%;
+  padding: 0 0.5rem;
+  margin: 0.5rem 0 1rem;
+  font-family: "DM Mono", monospace;
+  font-size: 0.7rem;
+  line-height: 1.5;
+  color: var(--grey-500);
+  overflow-wrap: anywhere;
+}
+
+.wardrobe-model-empty a:hover {
+  background: var(--pink-300);
+}
+
+.wardrobe-model-empty a {
+  color: var(--grey-900);
+  background: var(--pink-400);
+  border: 2px solid var(--border);
+  padding: 0.7rem 1rem;
+  font-family: "DM Mono", monospace;
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-decoration: none;
+  box-shadow: 3px 3px 0 var(--border);
+}
+
+.model-status {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.7rem 1rem;
+  border-top: 2px solid var(--border);
+  font-family: "DM Mono", monospace;
+  font-size: 0.6rem;
+  font-weight: 700;
+}
+
+.style-panel {
+  align-self: start;
+  border: 2px solid var(--border);
+  background: var(--white);
+  box-shadow: 3px 3px 0 rgba(81, 73, 81, 0.2);
+}
+
+.style-panel-title {
+  display: flex;
+  justify-content: space-between;
+  padding: 0.8rem 1rem;
+  border-bottom: 2px solid var(--border);
+  background: var(--pink-200);
+  font-family: "DM Mono", monospace;
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.category-list {
+  display: grid;
+  max-height: 28rem;
+  overflow-y: auto;
+  gap: 0.45rem;
+  padding: 1rem;
+}
+
+.category-button {
+  padding: 0.7rem 0.8rem;
+  border: 1px solid var(--grey-300);
+  background: var(--cream);
+  color: var(--grey-700);
+  text-align: left;
+  font-family: "DM Mono", monospace;
+  font-size: 0.65rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.category-button:hover,
+.category-button--active {
+  border-color: var(--border);
+  background: var(--pink-300);
+  color: var(--grey-900);
+}
+
+.category-button:focus-visible,
+.clothing-item:focus-visible,
+.clothing-item-select:focus-visible,
+.prepare-item-button:focus-visible,
+.outfit-actions button:focus-visible,
+.move-outfit-item:focus-visible,
+.remove-outfit-item:focus-visible {
+  outline: 3px solid var(--pink-600);
+  outline-offset: 2px;
+}
+
+.upload-link {
+  display: block;
+  margin: 0 1rem 1rem;
+  padding: 0.75rem;
+  border: 2px solid var(--border);
+  background: var(--white);
+  color: var(--grey-900);
+  text-align: center;
+  text-decoration: none;
+  font-family: "DM Mono", monospace;
+  font-size: 0.62rem;
+  font-weight: 700;
+  box-shadow: 2px 2px 0 var(--border);
+}
+
+.upload-link:hover {
+  background: var(--pink-100);
+}
+
+.clothing-area {
+  padding: 0 1.5rem 1.5rem;
+}
+
+.clothing-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1rem;
+  padding-bottom: 0.7rem;
+  border-bottom: 2px solid var(--border);
+  font-family: "DM Mono", monospace;
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.clothing-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 1rem;
+}
+
+.clothing-item {
+  min-width: 0;
+  padding: 0.55rem;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.45rem;
+  border: 2px solid var(--border);
+  background: var(--white);
+  color: var(--grey-900);
+  text-align: left;
+  cursor: pointer;
+  box-shadow: 3px 3px 0 rgba(81, 73, 81, 0.18);
+  transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+}
+
+.clothing-item:hover {
+  transform: translateY(-2px);
+  box-shadow: 4px 5px 0 rgba(81, 73, 81, 0.22);
+}
+
+.clothing-item--selected {
+  border-color: var(--pink-600);
+  background: var(--pink-100);
+  box-shadow: 0 0 0 2px var(--pink-400), 3px 3px 0 var(--border);
+}
+
+.clothing-item-image,
+.clothing-item-no-image {
+  width: 100%;
+  aspect-ratio: 1 / 1.1;
+  object-fit: cover;
+  background: var(--pink-100);
+}
+
+.clothing-item-no-image {
+  display: grid;
+  place-items: center;
+  color: var(--grey-500);
+  font-family: "DM Mono", monospace;
+  font-size: 0.6rem;
+}
+
+.clothing-item-category {
+  color: var(--pink-600);
+  font-family: "DM Mono", monospace;
+  font-size: 0.55rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+.clothing-item-name {
+  overflow-wrap: anywhere;
+  font-family: "DM Sans", sans-serif;
+  font-size: 0.85rem;
+}
+
+.clothing-item-readiness {
+  color: var(--grey-500);
+  font-family: "DM Mono", monospace;
+  font-size: 0.5rem;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.clothing-item-select:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.clothing-empty {
+  grid-column: 1 / -1;
+  min-height: 120px;
+  padding: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.55rem;
+  border: 2px dashed var(--grey-300);
+  background: var(--pink-100);
+  text-align: center;
+}
+
+.clothing-empty p {
+  margin: 0;
+  font-family: "DM Mono", monospace;
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.clothing-empty a {
+  color: var(--pink-600);
+  font-family: "DM Mono", monospace;
+  font-size: 0.6rem;
+  font-weight: 700;
+}
+
+.outfit-bar {
+  margin-top: 1.25rem;
+  padding: 1rem 1.25rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1.5rem;
+  border: 2px solid var(--border);
+  background: var(--pink-200);
+  box-shadow: 3px 3px 0 rgba(81, 73, 81, 0.2);
+}
+
+.outfit-summary {
+  min-width: 0;
+  flex: 1;
+}
+
+.outfit-label {
+  display: block;
+  margin-bottom: 0.45rem;
+  font-family: "DM Mono", monospace;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+#outfit-name {
+  width: min(100%, 300px);
+  padding: 0.55rem;
+  border: 1px solid var(--border);
+  background: var(--cream);
+  color: var(--grey-900);
+  font-family: "DM Mono", monospace;
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.current-outfit-items {
+  margin-top: 0.8rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.outfit-empty {
+  margin: 0;
+  color: var(--grey-700);
+  font-size: 0.8rem;
+}
+
+.current-outfit-item {
+  position: relative;
+  width: 110px;
+  padding: 0.35rem;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.3rem;
+  align-items: center;
+  border: 1px solid var(--border);
+  background: var(--cream);
+}
+
+.current-outfit-item img,
+.outfit-no-image {
+  width: 100%;
+  height: 70px;
+  grid-column: 1 / -1;
+  object-fit: cover;
+  background: var(--pink-100);
+}
+
+.outfit-no-image {
+  display: grid;
+  place-items: center;
+  color: var(--grey-500);
+  font-family: "DM Mono", monospace;
+  font-size: 0.5rem;
+}
+
+.current-outfit-item-name {
+  overflow: hidden;
+  font-size: 0.65rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.outfit-layer-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.move-outfit-item,
+.remove-outfit-item {
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--border);
+  background: var(--white);
+  color: var(--grey-900);
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.move-outfit-item:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.outfit-actions {
+  min-width: 150px;
+  display: grid;
+  gap: 0.6rem;
+}
+
+.outfit-actions button {
+  padding: 0.75rem 0.9rem;
+  border: 2px solid var(--border);
+  background: var(--white);
+  color: var(--grey-900);
+  font-family: "DM Mono", monospace;
+  font-size: 0.62rem;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 2px 2px 0 var(--border);
+}
+
+.outfit-actions button:hover {
+  background: var(--pink-100);
+}
+
+.outfit-message {
+  margin: 0;
+  color: var(--pink-600);
+  font-family: "DM Mono", monospace;
+  font-size: 0.58rem;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+@media (max-width: 750px) {
+  .wardrobe-main {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .wardrobe-model,
+  .wardrobe-model img {
+    min-height: 320px;
+    height: 320px;
+  }
+
+  .category-list {
+    display: flex;
+    overflow-x: auto;
+  }
+
+  .category-button {
+    flex: 0 0 auto;
+  }
+}
+
+@media (max-width: 550px) {
+  .wardrobe {
+    width: calc(100% - 1rem);
+    margin-top: 1rem;
+  }
+
+  .wardrobe-toolbar {
+    flex-direction: column;
+    gap: 0.35rem;
+    font-size: 0.58rem;
+  }
+
+  .wardrobe-main {
+    gap: 1rem;
+    padding: 0.75rem;
+  }
+
+  .clothing-area {
+    padding: 0 0.75rem 0.75rem;
+  }
+
+  .clothing-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.65rem;
+  }
+
+  .outfit-bar {
+    flex-direction: column;
+    gap: 1rem;
+    padding: 0.85rem;
+  }
+
+  .outfit-actions {
+    width: 100%;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .outfit-message {
+    grid-column: 1 / -1;
+  }
+}
+
+.wardrobe-model {
+  position: relative;
+  --dressed-canvas-max-width: 493.333px;
+}
+
+.dressed-canvas {
+  position: relative;
+  flex: 0 1 var(--dressed-canvas-max-width);
+  width: min(100%, var(--dressed-canvas-max-width));
+  height: auto;
+  max-width: 100%;
+  aspect-ratio: 2 / 3;
+  margin: auto;
+}
+
+.wardrobe-model .dressed-canvas img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  max-height: none;
+  object-fit: contain;
+}
+
+.wardrobe-model .dressed-character-base {
+  z-index: 0;
+}
+
+.dressed-clothing-layers {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.wardrobe-model .dressed-clothing-layer {
+  object-fit: contain;
+}
+
+/* ========================================
+   CENTERED FASHION STYLING ROOM
+======================================== */
+
+.wardrobe-main {
+  grid-template-areas: "clothing model outfit";
+  grid-template-columns:
+    minmax(205px, 0.78fr)
+    minmax(420px, 2fr)
+    minmax(220px, 0.9fr);
+  align-items: stretch;
+  gap: 1rem;
+  padding: 1rem;
+}
+
+.model-area {
+  grid-area: model;
+  align-self: center;
+}
+
+.model-window {
+  height: 100%;
+}
+
+.wardrobe-model {
+  height: auto;
+  min-height: 480px;
+}
+
+.wardrobe-model img {
+  width: 100%;
+  height: 100%;
+  max-height: 740px;
+  object-fit: contain;
+}
+
+.clothing-panel {
+  grid-area: clothing;
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+  min-width: 0;
+}
+
+.clothing-panel .style-panel {
+  flex: 0 0 auto;
+}
+
+.category-list {
+  max-height: min(24vh, 210px);
+  padding: 0.75rem;
+}
+
+.category-button {
+  padding: 0.55rem 0.65rem;
+}
+
+.clothing-area {
+  min-width: 0;
+  padding: 0;
+}
+
+.clothing-heading {
+  margin-bottom: 0.65rem;
+  font-size: 0.65rem;
+}
+
+.clothing-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-content: start;
+  max-height: min(45vh, 420px);
+  overflow-y: auto;
+  gap: 0.6rem;
+  padding: 0.2rem 0.3rem 0.6rem 0;
+}
+
+.clothing-item {
+  padding: 0.35rem;
+  gap: 0.3rem;
+}
+
+.clothing-item-image,
+.clothing-item-no-image {
+  aspect-ratio: 1 / 1;
+}
+
+.outfit-panel {
+  grid-area: outfit;
+  min-width: 0;
+}
+
+.outfit-bar {
+  height: 100%;
+  margin-top: 0;
+  padding: 0.85rem;
+  flex-direction: column;
+  justify-content: flex-start;
+  gap: 1rem;
+}
+
+.outfit-summary {
+  flex: 0 0 auto;
+  width: 100%;
+}
+
+.current-outfit-items {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-content: start;
+  max-height: min(42vh, 390px);
+  overflow-y: auto;
+}
+
+.current-outfit-item {
+  width: auto;
+  min-width: 0;
+}
+
+.outfit-actions {
+  width: 100%;
+  min-width: 0;
+}
+
+.outfit-message img {
+  display: block;
+  margin-top: 0.65rem;
+}
+
+.saved-outfits {
+  padding: 0 1rem 1rem;
+}
+
+/* ========================================
+   RESPONSIVE STYLING ROOM
+======================================== */
+
+@media (max-width: 1050px) and (min-width: 801px) {
+  .wardrobe-main {
+    grid-template-columns:
+      minmax(175px, 0.75fr)
+      minmax(320px, 1.6fr)
+      minmax(190px, 0.8fr);
+    gap: 0.7rem;
+    padding: 0.75rem;
+  }
+
+  .clothing-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 800px) {
+  .wardrobe-main {
+    grid-template-areas:
+      "model"
+      "clothing"
+      "outfit";
+    grid-template-columns: minmax(0, 1fr);
+    gap: 1rem;
+    padding: 0.85rem;
+  }
+
+  .model-area {
+    width: 100%;
+  }
+
+  .wardrobe-model {
+    --dressed-canvas-max-width: 413.333px;
+    height: auto;
+    min-height: 360px;
+  }
+
+  .wardrobe-model img {
+    height: 100%;
+    max-height: 620px;
+  }
+
+  .category-list {
+    display: flex;
+    max-height: none;
+    overflow-x: auto;
+  }
+
+  .category-button {
+    flex: 0 0 auto;
+  }
+
+  .clothing-grid {
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(125px, 34vw);
+    grid-template-columns: none;
+    max-height: none;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding-bottom: 0.75rem;
+  }
+
+  .outfit-bar {
+    height: auto;
+  }
+
+  .current-outfit-items {
+    max-height: 260px;
+  }
+}
+
+@media (max-width: 550px) {
+  .wardrobe-main {
+    padding: 0.65rem;
+  }
+
+  .wardrobe-model {
+    --dressed-canvas-max-width: 333.333px;
+    height: auto;
+    min-height: 330px;
+  }
+
+  .outfit-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .saved-outfits {
+    padding: 0 0.75rem 0.75rem;
+  }
+}

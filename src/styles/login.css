@@ -1,0 +1,130 @@
+.auth-page {
+  min-height: 70vh;
+  padding: 5rem 1.5rem;
+
+  display: grid;
+  place-items: center;
+}
+
+.auth-window {
+  width: min(100%, 520px);
+
+  border: 2px solid var(--border);
+  background: var(--cream);
+  box-shadow: var(--pixel-shadow);
+}
+
+.auth-window-bar {
+  padding: 0.7rem 1rem;
+
+  display: flex;
+  justify-content: space-between;
+
+  border-bottom: 2px solid var(--border);
+  background: var(--pink-300);
+
+  font-family: "DM Mono", monospace;
+  font-size: 0.65rem;
+}
+
+.auth-window-bar div {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.auth-content {
+  padding: clamp(2rem, 6vw, 4rem);
+}
+
+.auth-eyebrow {
+  margin: 0 0 1rem;
+
+  color: var(--pink-600);
+  font-family: "DM Mono", monospace;
+  font-size: 0.65rem;
+  letter-spacing: 0.1em;
+}
+
+.auth-content h1 {
+  margin: 0;
+
+  font-family: "Playfair Display", serif;
+  font-size: clamp(2.5rem, 6vw, 4rem);
+  font-weight: 500;
+}
+
+.auth-intro {
+  margin: 1rem 0 2rem;
+
+  color: var(--grey-500);
+  line-height: 1.6;
+}
+
+.auth-content form {
+  display: grid;
+  gap: 1.2rem;
+}
+
+.auth-content label {
+  display: grid;
+  gap: 0.5rem;
+
+  font-family: "DM Mono", monospace;
+  font-size: 0.65rem;
+}
+
+.auth-content input {
+  width: 100%;
+  padding: 0.9rem;
+
+  border: 1px solid var(--border);
+  border-radius: 0;
+
+  background: var(--white);
+  color: var(--grey-900);
+}
+
+.auth-content button {
+  padding: 1rem;
+
+  border: 1px solid var(--border);
+  border-radius: 999px;
+
+  background: var(--pink-400);
+
+  cursor: pointer;
+
+  font-family: "DM Mono", monospace;
+  font-size: 0.65rem;
+}
+
+.auth-content button:hover {
+  background: var(--pink-500);
+}
+
+.auth-content button:disabled {
+  opacity: 0.65;
+  cursor: wait;
+}
+
+.auth-message {
+  margin: 1rem 0 0;
+  color: var(--pink-600);
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
+.auth-switch {
+  margin: 2rem 0 0;
+
+  text-align: center;
+
+  color: var(--grey-500);
+  font-size: 0.8rem;
+}
+
+.auth-switch a {
+  color: var(--pink-600);
+  font-family: "DM Mono", monospace;
+  font-size: 0.65rem;
+}

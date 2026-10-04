@@ -1,0 +1,1663 @@
+---
+import Layout from "../layouts/Layout.astro";
+import "../styles/profile.css";
+import ProfileTheme from "../components/ProfileTheme.astro";
+---
+
+<Layout title="Closet — My Profile" header="app" bodyClass="profile-page-shell">
+  <ProfileTheme />
+
+  <section class="profile-page">
+
+    <div class="profile-top">
+
+      <div>
+
+        <p class="profile-eyebrow">MY ACCOUNT</p>
+
+        <h1>MY PROFILE</h1>
+
+      </div>
+
+      <a href="/closet" class="back-link">← OPEN CLOSET</a>
+
+    </div>
+
+
+
+    <!-- PROFILE -->
+
+    <div class="profile-grid">
+
+      <!-- MY MODEL -->
+
+      <div class="profile-card model-card">
+
+        <div class="card-header">
+
+          <span>MY MODEL</span>
+
+          <span>01</span>
+
+        </div>
+
+        <div class="model-upload">
+
+          <div class="uploaded-model" id="model-preview">
+
+            <div class="model-placeholder">
+
+              <span>♙</span>
+
+              <p>NO PHOTO YET</p>
+
+            </div>
+
+          </div>
+
+          <label for="model-upload" class="upload-button">
+
+            UPLOAD PHOTO
+
+          </label>
+
+          <input
+
+            type="file"
+
+            id="model-upload"
+
+            accept="image/*"
+
+            hidden
+
+          />
+
+          <button
+
+            type="button"
+
+            class="create-model-button"
+
+            id="create-model"
+
+            disabled
+
+          >
+
+            GENERATE AI MODEL ✦
+
+          </button>
+
+          <p class="model-description" id="model-description">
+            Upload a source photo to generate your personal AI fashion model.
+          </p>
+          <div class="character-history" id="character-history" aria-live="polite"></div>
+        </div>
+
+      </div>
+
+
+
+      <!-- PROFILE INFORMATION -->
+
+      <div class="profile-card">
+
+        <div class="card-header">
+
+          <span>PROFILE INFO</span>
+
+          <span>02</span>
+
+        </div>
+
+        <form class="profile-form">
+          <label>
+            MODEL TYPE
+            <select id="profile-gender" required>
+              <option value="">Choose Woman or Man</option>
+              <option value="woman">Woman</option>
+              <option value="man">Man</option>
+            </select>
+            <small id="profile-gender-lock"></small>
+          </label>
+
+          <label>
+
+            NAME
+
+            <input type="text" id="profile-name" placeholder="Your name" />
+
+          </label>
+
+          <label>
+
+            USERNAME
+
+            <input type="text" id="profile-username" placeholder="@username" />
+
+          </label>
+
+          <label>
+
+            FAVOURITE STYLE
+
+            <input
+
+              type="text"
+
+              id="profile-favourite-style"
+
+              placeholder="e.g. Y2K, minimal, vintage..."
+
+            />
+
+          </label>
+
+          <button type="submit" class="save-button">
+
+            SAVE PROFILE ✦
+
+          </button>
+
+          <p class="profile-save-status" id="profile-save-status" role="status" aria-live="polite"></p>
+          <p class="generation-usage" id="generation-usage" role="status" aria-live="polite"></p>
+
+        </form>
+
+      </div>
+
+    </div>
+
+
+
+    <!-- WARDROBE -->
+
+    <section class="closet-section">
+
+      <div class="section-heading">
+
+        <div>
+
+          <p class="profile-eyebrow">YOUR COLLECTION</p>
+
+          <h2>MY CLOTHING</h2>
+
+        </div>
+
+        <div class="profile-clothing-actions">
+          <a href="/closet" class="back-link">VIEW CLOSET LIBRARY →</a>
+          <button class="add-item-button" id="open-item-form">
+            + ADD NEW ITEM
+          </button>
+        </div>
+
+      </div>
+
+
+
+      <!-- ADD ITEM FORM -->
+
+      <div class="item-form-window" id="item-form">
+
+        <div class="form-window-bar">
+
+          <span>NEW_ITEM.EXE</span>
+
+          <button
+
+            type="button"
+
+            id="close-item-form"
+
+            aria-label="Close"
+
+          >
+
+            ×
+
+          </button>
+
+        </div>
+
+        <form id="new-item-form">
+
+          <label>
+
+            ITEM NAME
+
+            <input
+
+              type="text"
+
+              id="item-name"
+
+              placeholder="e.g. Pink cardigan"
+
+              required
+
+            />
+
+          </label>
+
+          <label>
+
+            CATEGORY
+
+            <select id="item-category" required>
+
+              <option value="">Choose category</option>
+
+            </select>
+
+          </label>
+
+          <label>
+
+            PHOTO
+
+            <input
+
+              type="file"
+
+              id="item-image"
+
+              accept="image/*"
+
+              required
+
+            />
+
+          </label>
+
+          <div class="item-preview" id="item-preview">
+
+            <span>NO IMAGE SELECTED</span>
+
+          </div>
+
+          <button type="submit" class="save-button">
+
+            ADD TO CLOSET ✦
+
+          </button>
+
+        </form>
+
+      </div>
+
+
+
+      <!-- CLOSET ITEMS -->
+
+      <div class="closet-grid" id="closet-grid">
+
+        <div class="empty-closet" id="empty-closet">
+
+          <span>♡</span>
+
+          <p>YOUR CLOSET IS EMPTY</p>
+
+          <small>Add your first piece to get started.</small>
+
+        </div>
+
+      </div>
+
+    </section>
+
+  </section>
+
+</Layout>
+
+
+
+<script>
+
+  import { supabase } from "../lib/supabase";
+  import { cacheDressedCharacter } from "../lib/client/dressed-character";
+  import { renderGenerationUsage } from "../lib/client/generation-usage";
+  import {
+    confirmAndDeleteWardrobeItem,
+    loadPersistentWardrobe,
+    processClothingItem,
+    saveOriginalClothingItem,
+  } from "../lib/client/wardrobe-ai";
+  import {
+    CLOTHING_CATEGORIES,
+    normalizeClothingCategory,
+  } from "../lib/shared/clothing-categories";
+  import {
+    CLOTHING_BASE_TYPES,
+    CURRENT_CLOTHING_ASSET_VERSION,
+    type ClothingBaseAsset,
+    type ClothingBaseType,
+  } from "../lib/shared/clothing-assets";
+  import { DRESSED_GEOMETRY_CONTRACT_VERSION } from "../lib/shared/clothing-geometry";
+
+  /* ========================================
+     PROFILE REFERENCES AND STATE
+  ======================================== */
+
+  type ClosetItem = {
+
+    id: string;
+
+    name: string;
+
+    category: string;
+
+    image: string;
+    originalPath?: string;
+    originalPreviewUrl?: string;
+    cleanPreviewPath?: string;
+    cleanPreviewUrl?: string;
+    aiReadyAssets?: Partial<Record<ClothingBaseType, ClothingBaseAsset>>;
+
+  };
+
+  const profileForm =
+
+    document.querySelector(".profile-form") as HTMLFormElement;
+
+  const profileName =
+
+    document.querySelector("#profile-name") as HTMLInputElement;
+
+  const profileUsername =
+
+    document.querySelector("#profile-username") as HTMLInputElement;
+
+  const profileFavouriteStyle =
+
+    document.querySelector("#profile-favourite-style") as HTMLInputElement;
+
+  const profileGender =
+    document.querySelector("#profile-gender") as HTMLSelectElement;
+
+  const profileGenderLock =
+    document.querySelector("#profile-gender-lock") as HTMLElement;
+
+  const generationUsage =
+    document.querySelector("#generation-usage") as HTMLElement;
+
+  const characterHistory =
+    document.querySelector("#character-history") as HTMLElement;
+
+  const profileSaveStatus =
+
+    document.querySelector("#profile-save-status") as HTMLElement;
+
+  const modelUpload =
+
+    document.querySelector("#model-upload") as HTMLInputElement;
+
+  const modelPreview =
+
+    document.querySelector("#model-preview") as HTMLElement;
+
+  const modelDescription =
+
+    document.querySelector("#model-description") as HTMLElement;
+
+  const createModelButton =
+
+    document.querySelector("#create-model") as HTMLButtonElement;
+
+  let sourcePhotoPath: string | null = null;
+
+  let modelGenerationStatus: string | null = null;
+
+  const itemForm =
+
+    document.querySelector("#item-form") as HTMLElement;
+
+  const openItemForm =
+
+    document.querySelector("#open-item-form") as HTMLButtonElement;
+
+  const closeItemForm =
+
+    document.querySelector("#close-item-form") as HTMLButtonElement;
+
+  const newItemForm =
+
+    document.querySelector("#new-item-form") as HTMLFormElement;
+
+  const itemName =
+
+    document.querySelector("#item-name") as HTMLInputElement;
+
+  const itemCategory =
+
+    document.querySelector("#item-category") as HTMLSelectElement;
+
+  const itemImage =
+
+    document.querySelector("#item-image") as HTMLInputElement;
+
+  const itemPreview =
+
+    document.querySelector("#item-preview") as HTMLElement;
+
+  const closetGrid =
+
+    document.querySelector("#closet-grid") as HTMLElement;
+
+  const emptyCloset =
+
+    document.querySelector("#empty-closet") as HTMLElement;
+
+  for (const category of CLOTHING_CATEGORIES) {
+    const option = document.createElement("option");
+    option.value = category.value;
+    option.textContent = category.label;
+    itemCategory.appendChild(option);
+  }
+
+  /* ========================================
+     MODEL TYPE AND CHARACTER HISTORY
+  ======================================== */
+
+  function lockProfileGender(gender: "woman" | "man") {
+    profileGender.value = gender;
+    profileGender.disabled = true;
+    profileGenderLock.textContent = "Locked as your DRESSED model type.";
+    document.documentElement.dataset.profileTheme = gender;
+  }
+
+  async function loadCharacterHistory() {
+    if (!supabase) return;
+    const { data: session, error: sessionError } = await supabase.auth.getSession();
+    if (sessionError || !session.session) return;
+    const { data: characters, error } = await supabase
+      .from("dressed_characters")
+      .select("id, model_path, gender, is_primary, geometry_contract_version, created_at")
+      .eq("user_id", session.session.user.id)
+      .order("created_at", { ascending: false });
+    if (error) {
+      console.error("Could not load saved DRESSED character history.", error);
+      characterHistory.textContent = "SAVED CHARACTER HISTORY COULD NOT BE LOADED.";
+      return;
+    }
+    characterHistory.replaceChildren();
+    if (!characters?.length) return;
+
+    const heading = document.createElement("p");
+    heading.textContent = "SAVED CHARACTER MODELS";
+    characterHistory.appendChild(heading);
+    for (const character of characters) {
+      if (!character.model_path.startsWith(`${session.session.user.id}/`)) continue;
+      const { data: signed, error: signedError } = await supabase.storage
+        .from("model-images")
+        .createSignedUrl(character.model_path, 60 * 60);
+      if (signedError || !signed) {
+        console.error("Could not sign a saved character preview.", signedError);
+        continue;
+      }
+      const card = document.createElement("div");
+      card.className = "character-history-item";
+      card.dataset.characterId = character.id;
+      const image = document.createElement("img");
+      image.src = signed.signedUrl;
+      image.alt = `Saved ${character.gender} DRESSED character`;
+      const status = document.createElement("span");
+      const isActive = character.is_primary;
+      const hasCompatibleGeometry =
+        character.geometry_contract_version === DRESSED_GEOMETRY_CONTRACT_VERSION;
+      status.textContent = [
+        isActive ? "PRIMARY CHARACTER" : "SAVED CHARACTER",
+        hasCompatibleGeometry ? "NORMALIZED GEOMETRY" : "LEGACY GEOMETRY",
+      ].join(" · ");
+      card.append(image, status);
+      const deleteButton = document.createElement("button");
+      deleteButton.type = "button";
+      deleteButton.textContent = "REMOVE CHARACTER";
+      deleteButton.addEventListener("click", async () => {
+        if (!window.confirm("Are you sure you want to remove this DRESSED character?")) return;
+        deleteButton.disabled = true;
+        try {
+          const { data: latestSession, error: latestSessionError } =
+            await supabase!.auth.getSession();
+          const accessToken = latestSession.session?.access_token;
+          if (latestSessionError || !accessToken) {
+            console.error("Could not verify the session for character deletion.", latestSessionError);
+            profileSaveStatus.textContent = "PLEASE LOG IN AGAIN TO REMOVE THIS CHARACTER.";
+            return;
+          }
+
+          const response = await fetch(`/api/characters/${encodeURIComponent(character.id)}`, {
+            method: "DELETE",
+            headers: { Authorization: `Bearer ${accessToken}` },
+          });
+          const result = (await response.json()) as { error?: string; warning?: string };
+          if (!response.ok) {
+            profileSaveStatus.textContent =
+              result?.error ?? "COULDN'T REMOVE THIS CHARACTER. PLEASE TRY AGAIN.";
+            return;
+          }
+
+          card.remove();
+          await loadProfile();
+          profileSaveStatus.textContent =
+            result.warning ?? "DRESSED CHARACTER REMOVED.";
+        } catch (error) {
+          console.error("Could not remove the DRESSED character.", error);
+          profileSaveStatus.textContent = "COULDN'T REMOVE THIS CHARACTER. PLEASE TRY AGAIN.";
+        } finally {
+          deleteButton.disabled = false;
+        }
+      });
+      card.appendChild(deleteButton);
+      if (!isActive && hasCompatibleGeometry) {
+        const useButton = document.createElement("button");
+        useButton.type = "button";
+        useButton.textContent = "USE AS PRIMARY";
+        useButton.addEventListener("click", () => {
+          useButton.disabled = true;
+          void (async () => {
+            try {
+              const { error: updateError } = await supabase!.rpc(
+                "set_primary_dressed_character",
+                { p_character_id: character.id }
+              );
+              if (updateError) {
+                throw updateError;
+              }
+              profileSaveStatus.textContent = "PRIMARY CHARACTER UPDATED.";
+              await loadProfile();
+              await loadPersistentItems();
+            } catch (updateError) {
+              console.error("Could not set the primary DRESSED character.", updateError);
+              profileSaveStatus.textContent = "COULDN'T CHANGE THE PRIMARY CHARACTER.";
+            } finally {
+              useButton.disabled = false;
+            }
+          })();
+        });
+        card.appendChild(useButton);
+      }
+      characterHistory.appendChild(card);
+    }
+  }
+
+  /* ========================================
+     PROFILE DATA
+  ======================================== */
+
+  async function loadProfile() {
+
+    if (!supabase) {
+
+      profileSaveStatus.textContent = "SUPABASE IS NOT CONFIGURED.";
+
+      return;
+
+    }
+
+    const { data: sessionData, error: sessionError } =
+      await supabase.auth.getSession();
+    if (sessionError || !sessionData.session) {
+      return;
+
+    }
+
+    const userId = sessionData.session.user.id;
+
+    const { data: profile, error } = await supabase
+      .from("profiles")
+      .select(
+        "name, username, favourite_style, gender, source_photo_path, model_photo_path, model_generation_status"
+      )
+      .eq("user_id", userId)
+      .maybeSingle();
+    if (error) {
+
+      console.error("Could not load profile.", error);
+
+      profileSaveStatus.textContent = "COULDN'T LOAD PROFILE.";
+
+      return;
+
+    }
+
+    if (!profile) {
+      const metadataGender = sessionData.session.user.user_metadata?.gender;
+      const metadataName = sessionData.session.user.user_metadata?.name;
+      const { error: insertError } = await supabase
+
+        .from("profiles")
+
+        .insert({
+
+          user_id: userId,
+          name: typeof metadataName === "string" && metadataName.trim()
+            ? metadataName.trim()
+            : sessionData.session.user.email?.split("@")[0] ?? "User",
+          gender: metadataGender === "woman" || metadataGender === "man"
+            ? metadataGender
+            : null,
+
+        });
+
+      if (insertError) {
+
+        console.error("Could not create profile.", insertError);
+
+        profileSaveStatus.textContent = "COULDN'T CREATE PROFILE.";
+
+      }
+
+      if (insertError) return;
+      void loadProfile();
+      return;
+
+    }
+
+    const metadataGender = sessionData.session.user.user_metadata?.gender;
+    if (
+      profile.gender !== "woman" &&
+      profile.gender !== "man" &&
+      (metadataGender === "woman" || metadataGender === "man")
+    ) {
+      const { data: updatedGender, error: genderError } = await supabase
+        .from("profiles")
+        .update({ gender: metadataGender })
+        .eq("user_id", userId)
+        .select("gender")
+        .maybeSingle();
+      if (genderError) {
+        console.error("Could not save the selected model type.", genderError);
+        profileSaveStatus.textContent = "COULDN'T SAVE MODEL TYPE.";
+      } else if (updatedGender?.gender === "woman" || updatedGender?.gender === "man") {
+        profile.gender = updatedGender.gender;
+        lockProfileGender(updatedGender.gender);
+      }
+    }
+
+    profileName.value = profile.name ?? "";
+
+    profileUsername.value = profile.username ?? "";
+
+    profileFavouriteStyle.value = profile.favourite_style ?? "";
+    if (profile.gender === "woman" || profile.gender === "man") {
+      lockProfileGender(profile.gender);
+    }
+    void loadCharacterHistory();
+
+    const accessToken = sessionData.session.access_token;
+    void renderGenerationUsage(generationUsage, accessToken).catch((usageError) => {
+      console.error("Could not load generation usage.", usageError);
+      generationUsage.textContent = "GENERATION LIMITS COULD NOT BE LOADED.";
+    });
+
+    sourcePhotoPath = profile.source_photo_path ?? null;
+    modelGenerationStatus = profile.model_generation_status ?? null;
+    const generationInProgress =
+      modelGenerationStatus === "pending" ||
+      modelGenerationStatus === "processing";
+    createModelButton.disabled =
+      !sourcePhotoPath ||
+      (profile.gender !== "woman" && profile.gender !== "man") ||
+      generationInProgress;
+
+    if (profile.model_photo_path) {
+      const { data: model, error: modelError } = await supabase.storage
+        .from("model-images")
+        .createSignedUrl(profile.model_photo_path, 60 * 60);
+
+      if (modelError) {
+        console.error("Could not load the saved AI model.", modelError);
+        modelDescription.textContent =
+          "COULDN'T LOAD YOUR AI MODEL. PLEASE TRY AGAIN.";
+      } else {
+        modelPreview.replaceChildren();
+        const image = document.createElement("img");
+        image.src = model.signedUrl;
+        image.alt = "Your AI-generated fashion model";
+        modelPreview.appendChild(image);
+        if (profile.gender === "woman" || profile.gender === "man") {
+          void cacheDressedCharacter({
+            signedUrl: model.signedUrl,
+            modelPhotoPath: profile.model_photo_path,
+            gender: profile.gender,
+          });
+        }
+        modelDescription.textContent =
+          generationInProgress
+            ? "MODEL GENERATION IN PROGRESS — Your saved model remains available."
+            : modelGenerationStatus === "completed"
+              ? "AI MODEL READY — Your generated fashion model is saved."
+              : "YOUR GENERATED FASHION MODEL IS SAVED.";
+      }
+      return;
+    }
+
+    if (profile.source_photo_path) {
+      const { data: photo, error: photoError } = await supabase.storage
+        .from("profile-images")
+        .createSignedUrl(profile.source_photo_path, 60 * 60);
+
+      if (photoError) {
+        console.error("Could not load the saved source photo.", photoError);
+        modelDescription.textContent =
+          "COULDN'T LOAD SAVED PHOTO. PLEASE TRY AGAIN.";
+        return;
+      }
+
+      modelPreview.replaceChildren();
+      const image = document.createElement("img");
+      image.src = photo.signedUrl;
+      image.alt = "Your uploaded source photo";
+      modelPreview.appendChild(image);
+      modelDescription.textContent =
+        modelGenerationStatus === "failed"
+          ? "MODEL GENERATION FAILED. YOU CAN TRY AGAIN."
+          : generationInProgress
+            ? "MODEL GENERATION IN PROGRESS..."
+            : "SOURCE PHOTO SAVED — Generate your fashion model when ready.";
+      return;
+    }
+
+    const localSourcePhoto = localStorage.getItem("closet-source-photo");
+
+    if (localSourcePhoto?.startsWith("data:image/")) {
+      modelPreview.replaceChildren();
+      const image = document.createElement("img");
+      image.src = localSourcePhoto;
+      image.alt = "Your uploaded source photo";
+      modelPreview.appendChild(image);
+      modelDescription.textContent =
+        "SOURCE PHOTO SAVED — Generate your fashion model when ready.";
+    }
+
+  }
+
+  void loadProfile();
+
+  profileForm?.addEventListener("submit", async (event) => {
+
+    event.preventDefault();
+
+    if (!supabase) {
+
+      profileSaveStatus.textContent = "SUPABASE IS NOT CONFIGURED.";
+
+      return;
+
+    }
+
+    profileSaveStatus.textContent = "SAVING...";
+
+    const { data: sessionData, error: sessionError } =
+
+      await supabase.auth.getSession();
+
+    if (sessionError || !sessionData.session) {
+
+      profileSaveStatus.textContent = "PLEASE LOG IN AGAIN.";
+
+      return;
+
+    }
+
+    const userId = sessionData.session.user.id;
+
+    const { error } = await supabase
+
+      .from("profiles")
+
+      .update({
+
+        name: profileName.value.trim(),
+
+        username: profileUsername.value.trim(),
+
+        favourite_style: profileFavouriteStyle.value.trim(),
+
+      })
+
+      .eq("user_id", userId);
+
+    if (error) {
+
+      console.error("Could not save profile.", error);
+
+      profileSaveStatus.textContent = "COULDN'T SAVE PROFILE.";
+
+      return;
+
+    }
+
+    profileSaveStatus.textContent = "PROFILE SAVED ✓";
+
+  });
+
+  profileGender?.addEventListener("change", async () => {
+  if (!supabase || (profileGender.value !== "woman" && profileGender.value !== "man")) {
+    profileSaveStatus.textContent = "CHOOSE WOMAN OR MAN.";
+    return;
+  }
+  const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+  if (sessionError || !sessionData.session) {
+    profileSaveStatus.textContent = "PLEASE LOG IN AGAIN.";
+    return;
+  }
+  profileGender.disabled = true;
+  const { data, error } = await supabase
+    .from("profiles")
+    .update({ gender: profileGender.value })
+    .eq("user_id", sessionData.session.user.id)
+    .select("gender")
+    .maybeSingle();
+  if (error || !data || (data.gender !== "woman" && data.gender !== "man")) {
+    console.error("Could not save the locked profile model type.", error);
+    profileGender.disabled = false;
+    profileSaveStatus.textContent = "COULDN'T SAVE MODEL TYPE. PLEASE TRY AGAIN.";
+    return;
+  }
+  lockProfileGender(data.gender);
+  createModelButton.disabled = !sourcePhotoPath;
+  profileSaveStatus.textContent = "MODEL TYPE SAVED AND LOCKED.";
+  });
+
+  /* ========================================
+     SOURCE PHOTO AND AI CHARACTER GENERATION
+  ======================================== */
+
+  modelUpload?.addEventListener("change", async () => {
+
+    const file = modelUpload.files?.[0];
+
+    if (!file) return;
+    createModelButton.disabled = true;
+
+    const allowedImageTypes: Record<string, string> = {
+      "image/jpeg": "jpg",
+      "image/png": "png",
+      "image/webp": "webp",
+    };
+
+    if (!allowedImageTypes[file.type]) {
+      modelDescription.textContent =
+        "PLEASE CHOOSE A JPG, PNG, OR WEBP IMAGE.";
+      modelUpload.value = "";
+      return;
+    }
+
+    if (file.size > 10 * 1024 * 1024) {
+      modelDescription.textContent =
+        "PHOTO MUST BE 10 MB OR SMALLER. PLEASE CHOOSE ANOTHER IMAGE.";
+      modelUpload.value = "";
+      return;
+    }
+
+    const reader = new FileReader();
+
+    reader.onload = () => {
+      if (typeof reader.result !== "string") {
+        modelDescription.textContent = "COULDN'T READ PHOTO. PLEASE TRY AGAIN.";
+        return;
+      }
+
+      modelPreview.replaceChildren();
+      const image = document.createElement("img");
+      image.src = reader.result;
+      image.alt = "Your uploaded photo";
+      modelPreview.appendChild(image);
+
+      void uploadSourcePhoto(file, reader.result);
+
+    };
+
+    reader.onerror = () => {
+
+      modelDescription.textContent = "COULDN'T READ PHOTO. PLEASE TRY AGAIN.";
+
+    };
+
+    reader.readAsDataURL(file);
+
+  });
+
+  function processingKey(itemId: string, baseType: ClothingBaseType) {
+    return `${itemId}:${baseType}`;
+  }
+
+  async function prepareClosetItem(
+    item: ClosetItem,
+    baseType: ClothingBaseType
+  ): Promise<boolean> {
+    if (!supabase) throw new Error("SUPABASE IS NOT CONFIGURED.");
+    if (!item.image.startsWith("data:image/") && !item.originalPath) {
+      throw new Error("PLEASE RE-UPLOAD THIS IMAGE TO PREPARE IT FOR AI.");
+    }
+    const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+    const accessToken = sessionData.session?.access_token;
+    if (sessionError || !accessToken) {
+      throw new Error("PLEASE LOG IN AGAIN BEFORE PREPARING CLOTHING.");
+    }
+    itemPreview.textContent = "CHECKING AND PREPARING CLOTHING WITH AI...";
+    const processedItem = await processClothingItem(accessToken, { ...item, baseType });
+    item.aiReadyAssets ??= {};
+    item.aiReadyAssets[baseType] = {
+      referencePath: processedItem.referencePath,
+      previewUrl: processedItem.previewUrl,
+      generationVersion: processedItem.generationVersion,
+      characterId: processedItem.characterId,
+    };
+    item.originalPath = processedItem.originalPath ?? item.originalPath;
+    item.originalPreviewUrl = processedItem.originalPreviewUrl ?? item.originalPreviewUrl;
+    item.cleanPreviewPath = processedItem.cleanPreviewPath ?? item.cleanPreviewPath;
+    item.cleanPreviewUrl = processedItem.cleanPreviewUrl ?? item.cleanPreviewUrl;
+    saveItems();
+    renderItems();
+    const { data: freshSession } = await supabase.auth.getSession();
+    if (freshSession.session) {
+      await renderGenerationUsage(generationUsage, freshSession.session.access_token);
+    }
+    itemPreview.textContent = "CLOTHING ASSET SAVED PRIVATELY AND AI READY.";
+    return true;
+  }
+
+  async function uploadSourcePhoto(file: File, imageDataUrl: string) {
+    modelDescription.textContent = "UPLOADING SOURCE PHOTO...";
+
+    if (!supabase) {
+      modelDescription.textContent =
+        "SUPABASE IS NOT CONFIGURED. PHOTO WAS NOT UPLOADED.";
+      return;
+    }
+
+    try {
+      const { data: sessionData, error: sessionError } =
+        await supabase.auth.getSession();
+
+      if (sessionError || !sessionData.session) {
+        console.error("Could not verify the user session for photo upload.", sessionError);
+        modelDescription.textContent =
+          "PLEASE LOG IN AGAIN BEFORE UPLOADING A PHOTO.";
+        return;
+      }
+
+      const formData = new FormData();
+      formData.append("photo", file, file.name);
+      const response = await fetch("/api/profile/source-photo", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${sessionData.session.access_token}`,
+        },
+        body: formData,
+      });
+      const result = (await response.json()) as {
+        error?: string;
+        sourcePhotoPath?: string;
+      };
+      if (!response.ok || !result.sourcePhotoPath) {
+        modelDescription.textContent =
+          result.error ?? "COULDN'T UPLOAD PHOTO. PLEASE TRY AGAIN.";
+        createModelButton.disabled = !sourcePhotoPath;
+        return;
+      }
+
+      sourcePhotoPath = result.sourcePhotoPath;
+      createModelButton.disabled =
+        profileGender.value !== "woman" && profileGender.value !== "man";
+
+      let wardrobeMirrorSaved = true;
+
+      try {
+        localStorage.setItem("closet-source-photo", imageDataUrl);
+      } catch (error) {
+        wardrobeMirrorSaved = false;
+        console.warn(
+          "Source photo was uploaded, but could not be mirrored for the current wardrobe prototype.",
+          error
+        );
+      }
+
+      modelDescription.textContent = wardrobeMirrorSaved
+        ? "SOURCE PHOTO SAVED — Generate your DRESSED character when ready."
+        : "PHOTO SAVED TO YOUR ACCOUNT. WARDROBE PREVIEW COULD NOT BE CACHED ON THIS DEVICE.";
+    } catch (error) {
+      console.error("Unexpected error while uploading the source photo.", error);
+      modelDescription.textContent =
+        error instanceof Error ? error.message : "COULDN'T UPLOAD PHOTO. PLEASE TRY AGAIN.";
+      createModelButton.disabled =
+        !sourcePhotoPath ||
+        (profileGender.value !== "woman" && profileGender.value !== "man");
+    }
+
+  }
+
+  createModelButton?.addEventListener("click", async () => {
+    if (!supabase || !sourcePhotoPath) {
+      modelDescription.textContent =
+        "UPLOAD A SOURCE PHOTO BEFORE GENERATING YOUR MODEL.";
+      return;
+    }
+    if (profileGender.value !== "woman" && profileGender.value !== "man") {
+      modelDescription.textContent = "CHOOSE WOMAN OR MAN BEFORE GENERATING YOUR DRESSED CHARACTER.";
+      return;
+    }
+
+    const { data: sessionData, error: sessionError } =
+      await supabase.auth.getSession();
+    const accessToken = sessionData.session?.access_token;
+
+    if (sessionError || !accessToken) {
+      console.error("Could not verify the session for model generation.", sessionError);
+      modelDescription.textContent = "PLEASE LOG IN AGAIN.";
+      return;
+    }
+
+    createModelButton.disabled = true;
+    modelDescription.textContent =
+      "GENERATING YOUR DRESSED CHARACTER. PLEASE WAIT...";
+
+    try {
+      const response = await fetch("/api/ai/personal-model", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+      });
+      const result = (await response.json()) as {
+        error?: string;
+        modelPhotoPath?: string;
+        status?: string;
+        gender?: "woman" | "man";
+        usage?: { usedCount: number; freeLimit: number };
+      };
+
+      if (!response.ok || !result.modelPhotoPath) {
+        modelDescription.textContent =
+          result.error ?? "MODEL GENERATION FAILED. PLEASE TRY AGAIN.";
+          modelGenerationStatus = "failed";
+          return;
+      }
+
+      const { data: model, error: modelError } = await supabase.storage
+        .from("model-images")
+        .createSignedUrl(result.modelPhotoPath, 60 * 60);
+
+      if (modelError) {
+        console.error("Model generated, but its preview URL could not be created.", modelError);
+        modelDescription.textContent =
+          "MODEL CREATED, BUT THE PREVIEW COULD NOT LOAD. PLEASE REFRESH.";
+        return;
+      }
+
+      modelPreview.replaceChildren();
+      const image = document.createElement("img");
+      image.src = model.signedUrl;
+      image.alt = "Your DRESSED character";
+      modelPreview.appendChild(image);
+      if (result.gender === "woman" || result.gender === "man") {
+        lockProfileGender(result.gender);
+        await cacheDressedCharacter({
+          signedUrl: model.signedUrl,
+          modelPhotoPath: result.modelPhotoPath,
+          gender: result.gender,
+        });
+      }
+      await renderGenerationUsage(generationUsage, accessToken);
+      modelDescription.textContent =
+        `DRESSED CHARACTER READY — ${result.usage?.usedCount ?? "?"} / ${result.usage?.freeLimit ?? "?"} character generations used.`;
+      modelGenerationStatus = "completed";
+      void loadCharacterHistory();
+    } catch (error) {
+      console.error("Could not complete model generation.", error);
+      modelDescription.textContent =
+        "MODEL GENERATION FAILED. PLEASE CHECK YOUR CONNECTION AND TRY AGAIN.";
+      modelGenerationStatus = "failed";
+    } finally {
+      createModelButton.disabled =
+        !sourcePhotoPath ||
+        (profileGender.value !== "woman" && profileGender.value !== "man");
+      await renderGenerationUsage(generationUsage, accessToken).catch((usageError) => {
+        console.error("Could not refresh generation usage.", usageError);
+      });
+    }
+  });
+
+  /* ========================================
+     WARDROBE FORM AND IMAGE PREVIEW
+  ======================================== */
+
+  openItemForm?.addEventListener("click", () => {
+
+    itemForm.classList.add("is-open");
+
+  });
+
+  closeItemForm?.addEventListener("click", () => {
+
+    itemForm.classList.remove("is-open");
+
+  });
+
+  itemImage?.addEventListener("change", () => {
+
+    const file = itemImage.files?.[0];
+
+    if (!file) return;
+
+    if (!file.type.startsWith("image/")) {
+
+      itemPreview.textContent = "PLEASE CHOOSE AN IMAGE FILE.";
+
+      itemImage.value = "";
+
+      return;
+
+    }
+
+    const reader = new FileReader();
+
+    reader.onload = () => {
+
+      if (typeof reader.result !== "string") {
+
+        itemPreview.textContent = "COULDN'T READ PHOTO. PLEASE TRY AGAIN.";
+
+        return;
+
+      }
+
+      itemPreview.replaceChildren();
+
+      const image = document.createElement("img");
+
+      image.src = reader.result;
+
+      image.alt = "Item preview";
+
+      itemPreview.appendChild(image);
+
+    };
+
+    reader.onerror = () => {
+
+      itemPreview.textContent = "COULDN'T READ PHOTO. PLEASE TRY AGAIN.";
+
+    };
+
+    reader.readAsDataURL(file);
+
+  });
+
+  /* ========================================
+     LOCAL CLOSET DATA AND RENDERING
+  ======================================== */
+
+  let savedItems: ClosetItem[] = [];
+  const processingItemIds = new Set<string>();
+  const deletingItemIds = new Set<string>();
+  const itemProcessingErrors = new Map<string, string>();
+  let activePrimaryCharacterId: string | null = null;
+  let activePrimaryCharacterBaseType: ClothingBaseType | null = null;
+
+  function readLocalAiReadyAssets(
+    value: unknown
+  ): Partial<Record<ClothingBaseType, ClothingBaseAsset>> {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+    const assets: Partial<Record<ClothingBaseType, ClothingBaseAsset>> = {};
+    for (const baseType of CLOTHING_BASE_TYPES) {
+      const candidate = (value as Record<string, unknown>)[baseType];
+      if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) continue;
+      const asset = candidate as Record<string, unknown>;
+      const referencePath = asset.referencePath;
+      const generationVersion = asset.generationVersion;
+      if (typeof referencePath === "string" && typeof generationVersion === "number") {
+        assets[baseType] = {
+          referencePath,
+          previewUrl: "",
+          generationVersion,
+          ...(typeof asset.characterId === "string" ? { characterId: asset.characterId } : {}),
+        };
+      }
+    }
+    return assets;
+  }
+
+  function toLocalClosetItems() {
+    return savedItems.map((item) => ({
+      ...item,
+      image: item.image.startsWith("https://") ? "" : item.image,
+      originalPreviewUrl: undefined,
+      cleanPreviewUrl: undefined,
+      aiReadyAssets: Object.fromEntries(
+        CLOTHING_BASE_TYPES.flatMap((baseType) => {
+          const asset = item.aiReadyAssets?.[baseType];
+          return asset
+            ? [[baseType, {
+                referencePath: asset.referencePath,
+                generationVersion: asset.generationVersion,
+                characterId: asset.characterId,
+              }]]
+            : [];
+        })
+      ),
+    }));
+  }
+
+  try {
+
+    const storedItems: unknown = JSON.parse(
+
+      localStorage.getItem("closet-items") || "[]"
+
+    );
+
+    if (Array.isArray(storedItems)) {
+
+      savedItems = storedItems
+
+        .filter(
+
+          (item): item is Record<string, unknown> =>
+
+            item !== null &&
+
+            typeof item === "object" &&
+
+            !Array.isArray(item)
+
+        )
+
+        .filter(
+          (item) => {
+            const category = normalizeClothingCategory(item.category);
+            return (
+            typeof item.name === "string" &&
+              (typeof item.image === "string" || typeof item.originalPath === "string") &&
+            category !== null
+            );
+          }
+        )
+        .map((item) => ({
+
+          id:
+
+            typeof item.id === "string"
+
+              ? item.id
+
+              : crypto.randomUUID(),
+
+          name: item.name as string,
+
+          category: normalizeClothingCategory(item.category)!.toUpperCase(),
+
+          image: typeof item.image === "string" ? item.image : "",
+          originalPath: typeof item.originalPath === "string" ? item.originalPath : undefined,
+          originalPreviewUrl:
+            typeof item.originalPreviewUrl === "string" ? item.originalPreviewUrl : undefined,
+          cleanPreviewPath: typeof item.cleanPreviewPath === "string" ? item.cleanPreviewPath : undefined,
+          aiReadyAssets: readLocalAiReadyAssets(item.aiReadyAssets),
+        }));
+
+    }
+
+    if (savedItems.length > 0) {
+
+      localStorage.setItem(
+        "closet-items",
+        JSON.stringify(toLocalClosetItems())
+      );
+
+    }
+
+  } catch (error) {
+
+    console.warn(
+
+      "Could not read saved CLOSET items; showing an empty closet.",
+
+      error
+
+    );
+
+  }
+
+  function saveItems() {
+
+    try {
+
+      localStorage.setItem(
+        "closet-items",
+        JSON.stringify(toLocalClosetItems())
+      );
+
+      return true;
+
+    } catch (error) {
+
+      console.error("Could not save CLOSET items.", error);
+
+      return false;
+
+    }
+
+  }
+
+  function renderItems() {
+
+    closetGrid.replaceChildren();
+
+    if (savedItems.length === 0) {
+
+      closetGrid.appendChild(emptyCloset);
+
+      return;
+
+    }
+
+    savedItems.forEach((item) => {
+
+      const card = document.createElement("article");
+
+      card.className = "closet-item";
+
+      const imageContainer = document.createElement("div");
+
+      imageContainer.className = "item-image";
+
+      const image = document.createElement("img");
+
+      image.src = item.cleanPreviewUrl || item.originalPreviewUrl || (
+        item.image.startsWith("data:image/") ? item.image : ""
+      );
+
+      image.alt = item.name;
+
+      if (image.src) imageContainer.appendChild(image);
+      else imageContainer.textContent = "NO IMAGE";
+
+      const info = document.createElement("div");
+
+      info.className = "item-info";
+
+      const category = document.createElement("span");
+
+      category.textContent = item.category;
+
+      const name = document.createElement("h3");
+
+      name.textContent = item.name;
+
+      info.append(category, name);
+      let itemIsProcessing = false;
+      for (const baseType of CLOTHING_BASE_TYPES) {
+        const key = processingKey(item.id, baseType);
+        const asset = item.aiReadyAssets?.[baseType];
+        const isAiReady = Boolean(
+          asset?.referencePath &&
+          asset.generationVersion === CURRENT_CLOTHING_ASSET_VERSION &&
+          asset.characterId === activePrimaryCharacterId
+        );
+        const isProcessing = processingItemIds.has(key);
+        itemIsProcessing ||= isProcessing;
+        const readiness = document.createElement("span");
+        readiness.textContent = `${baseType.toUpperCase()} — ${
+          isProcessing ? "PROCESSING" : isAiReady ? "AI READY" : "NOT AI READY"
+        }`;
+        info.appendChild(readiness);
+        const processingError = itemProcessingErrors.get(key);
+        if (processingError) {
+          const errorMessage = document.createElement("small");
+          errorMessage.className = "item-processing-error";
+          errorMessage.textContent = processingError;
+          info.appendChild(errorMessage);
+        }
+        if (
+          !isAiReady &&
+          !isProcessing &&
+          baseType === activePrimaryCharacterBaseType &&
+          (item.image.startsWith("data:image/") || item.originalPath)
+        ) {
+          const prepareButton = document.createElement("button");
+          prepareButton.type = "button";
+          prepareButton.className = "save-button";
+          prepareButton.textContent = `MAKE ${baseType.toUpperCase()} AI READY`;
+          prepareButton.addEventListener("click", () => {
+            processingItemIds.add(key);
+            itemProcessingErrors.delete(key);
+            renderItems();
+            void prepareClosetItem(item, baseType)
+              .catch((error) => {
+                console.error(`Could not prepare this closet item for ${baseType}.`, error);
+                const message = error instanceof Error
+                  ? error.message
+                  : "COULDN'T PREPARE ITEM. PLEASE TRY AGAIN.";
+                itemProcessingErrors.set(key, message);
+                itemPreview.textContent = message;
+              })
+              .finally(() => {
+                processingItemIds.delete(key);
+                renderItems();
+              });
+          });
+          info.appendChild(prepareButton);
+        }
+      }
+      const deleteButton = document.createElement("button");
+      deleteButton.type = "button";
+      deleteButton.className = "delete-item-button";
+      deleteButton.textContent = deletingItemIds.has(item.id) ? "REMOVING..." : "DELETE ITEM";
+      deleteButton.disabled = deletingItemIds.has(item.id) || itemIsProcessing;
+      deleteButton.addEventListener("click", () => {
+        void (async () => {
+          if (!supabase) throw new Error("SUPABASE IS NOT CONFIGURED.");
+          const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+          const accessToken = sessionData.session?.access_token;
+          if (sessionError || !accessToken) throw new Error("PLEASE LOG IN AGAIN BEFORE REMOVING THIS ITEM.");
+          deletingItemIds.add(item.id);
+          renderItems();
+          const confirmed = await confirmAndDeleteWardrobeItem(accessToken, item);
+          if (!confirmed) return;
+          savedItems = savedItems.filter((savedItem) => savedItem.id !== item.id);
+          for (const baseType of CLOTHING_BASE_TYPES) {
+            const key = processingKey(item.id, baseType);
+            itemProcessingErrors.delete(key);
+            processingItemIds.delete(key);
+          }
+          saveItems();
+          renderItems();
+          profileSaveStatus.textContent = `${item.name.toUpperCase()} REMOVED FROM YOUR CLOSET.`;
+        })().catch((error) => {
+          console.error("Could not delete this clothing item.", error);
+          profileSaveStatus.textContent = error instanceof Error
+            ? error.message
+            : "COULD NOT REMOVE THIS CLOTHING ITEM.";
+        }).finally(() => {
+          deletingItemIds.delete(item.id);
+          renderItems();
+        });
+      });
+      info.appendChild(deleteButton);
+      card.append(imageContainer, info);
+
+      closetGrid.appendChild(card);
+
+    });
+
+  }
+
+  async function loadPersistentItems() {
+    if (!supabase) return;
+    const { data: sessionData } = await supabase.auth.getSession();
+    const token = sessionData.session?.access_token;
+    if (!token) return;
+    try {
+    const result = await loadPersistentWardrobe(token);
+    activePrimaryCharacterId = result.primaryCharacterId;
+    activePrimaryCharacterBaseType = result.primaryCharacterBaseType;
+    savedItems = result.items.map((stored) => {
+      const cached = savedItems.find((item) => item.id === stored.id);
+      return {
+        id: stored.id,
+        name: stored.name,
+        category: stored.category.toUpperCase(),
+        image: cached?.image.startsWith("data:image/") ? cached.image : "",
+        referencePath: stored.referencePath ?? undefined,
+        previewUrl: stored.previewUrl ?? undefined,
+        cleanPreviewPath: stored.cleanPreviewPath ?? undefined,
+        cleanPreviewUrl: stored.cleanPreviewUrl ?? undefined,
+        originalPath: stored.originalPath ?? undefined,
+        originalPreviewUrl: stored.originalPreviewUrl ?? undefined,
+        aiReadyAssets: stored.aiReadyAssets ?? {},
+      };
+    });
+    renderItems();
+    saveItems();
+    } catch (error) {
+      console.error("Could not load persistent wardrobe items.", error);
+    }
+  }
+
+  renderItems();
+  void loadPersistentItems().catch((error) => {
+    console.error("Could not synchronize the persistent wardrobe.", error);
+  });
+
+  /* ========================================
+     CLOTHING ITEM CREATION
+  ======================================== */
+
+  newItemForm?.addEventListener("submit", (event) => {
+
+    event.preventDefault();
+
+    const file = itemImage.files?.[0];
+
+    if (!file) return;
+
+    const reader = new FileReader();
+
+    reader.onload = () => {
+
+      if (typeof reader.result !== "string") {
+
+        itemPreview.textContent = "COULDN'T READ PHOTO. PLEASE TRY AGAIN.";
+
+        return;
+
+      }
+
+      const newItem: ClosetItem = {
+
+        id: crypto.randomUUID(),
+
+        name: itemName.value,
+
+        category: itemCategory.value.toUpperCase(),
+
+        image: reader.result,
+
+      };
+
+      const submitButton = newItemForm.querySelector<HTMLButtonElement>("button[type=submit]");
+      if (submitButton) submitButton.disabled = true;
+      void (async () => {
+        if (!supabase) {
+          itemPreview.textContent = "SUPABASE IS NOT CONFIGURED.";
+          return;
+        }
+        const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+        const token = sessionData.session?.access_token;
+        if (sessionError || !token) {
+          itemPreview.textContent = "PLEASE LOG IN AGAIN BEFORE SAVING CLOTHING.";
+          return;
+        }
+        const saved = await saveOriginalClothingItem(token, newItem);
+        newItem.originalPath = saved.originalPath;
+        newItem.originalPreviewUrl = saved.originalPreviewUrl;
+        newItem.cleanPreviewPath = saved.previewPath ?? undefined;
+        newItem.cleanPreviewUrl = saved.cleanPreviewUrl ?? undefined;
+        savedItems.push(newItem);
+        const cached = saveItems();
+        renderItems();
+        newItemForm.reset();
+        itemPreview.textContent = saved.previewError
+          ? `CLOTHING SAVED. CLEAN PREVIEW UNAVAILABLE: ${saved.previewError}`
+          : cached
+            ? "CLOTHING SAVED WITH A CLEAN PREVIEW. MAKE IT AI-READY WHEN YOU WANT TO STYLE IT."
+            : "CLOTHING SAVED TO YOUR ACCOUNT WITH A CLEAN PREVIEW.";
+        itemForm.classList.remove("is-open");
+      })()
+        .catch((error) => {
+          console.error("Could not save original clothing.", error);
+          itemPreview.textContent =
+            error instanceof Error ? error.message : "COULD NOT SAVE THIS CLOTHING ITEM.";
+        })
+        .finally(() => {
+          if (submitButton) submitButton.disabled = false;
+        });
+
+    };
+
+    reader.onerror = () => {
+
+      itemPreview.textContent = "COULDN'T READ PHOTO. PLEASE TRY AGAIN.";
+
+    };
+
+    reader.readAsDataURL(file);
+
+  });
+
+</script>
+
+<script>
+
+  import { supabase } from "../lib/supabase";
+
+  /* ========================================
+     AUTHENTICATED PROFILE SESSION
+  ======================================== */
+
+  const checkProfileSession = async () => {
+
+    if (!supabase) {
+
+      window.location.replace("/login?reason=config");
+
+      return;
+
+    }
+
+    try {
+
+      const { data, error } = await supabase.auth.getSession();
+
+      if (error) {
+
+        console.error("Could not verify the profile session.", error);
+
+        window.location.replace("/login?reason=session");
+
+        return;
+
+      }
+
+      if (!data.session) {
+
+        window.location.replace("/login");
+
+      }
+
+    } catch (error) {
+
+      console.error("Unexpected error while verifying the profile session.", error);
+
+      window.location.replace("/login?reason=session");
+
+    }
+
+  };
+
+  void checkProfileSession();
+
+</script>

@@ -1,0 +1,146 @@
+---
+import Layout from "../layouts/Layout.astro";
+import "../styles/profile.css";
+import "../styles/closet.css";
+import ProfileTheme from "../components/ProfileTheme.astro";
+---
+
+<Layout title="Closet — My Closet" header="app" bodyClass="profile-page-shell">
+  <ProfileTheme />
+  <main class="profile-page closet-library">
+    <header class="closet-library-heading">
+      <div>
+        <p class="profile-eyebrow">YOUR CLOTHING LIBRARY</p>
+        <h1>MY CLOSET</h1>
+      </div>
+      <a class="back-link" href="/wardrobe">GO TO DRESSED →</a>
+    </header>
+    <p class="closet-library-message" id="closet-message" role="status" aria-live="polite">
+      LOADING YOUR CLOSET...
+    </p>
+    <section class="closet-grid" id="closet-grid" aria-label="Clothing items"></section>
+  </main>
+</Layout>
+
+<script>
+  import { supabase } from "../lib/supabase";
+  import { categoryLabel, normalizeClothingCategory } from "../lib/shared/clothing-categories";
+  import { CURRENT_CLOTHING_ASSET_VERSION } from "../lib/shared/clothing-assets";
+  import {
+    confirmAndDeleteWardrobeItem,
+    loadPersistentWardrobe,
+  } from "../lib/client/wardrobe-ai";
+
+  const grid = document.querySelector<HTMLElement>("#closet-grid")!;
+  const message = document.querySelector<HTMLElement>("#closet-message")!;
+
+  function renderEmpty(text: string) {
+    grid.replaceChildren();
+    const empty = document.createElement("p");
+    empty.className = "closet-library-empty";
+    empty.textContent = text;
+    grid.appendChild(empty);
+  }
+
+  async function loadCloset() {
+    if (!supabase) {
+      message.textContent = "CLOSET IS UNAVAILABLE BECAUSE SUPABASE IS NOT CONFIGURED.";
+      renderEmpty("YOUR CLOTHING COULD NOT BE LOADED.");
+      return;
+    }
+
+    const { data: session, error: sessionError } = await supabase.auth.getSession();
+    const accessToken = session.session?.access_token;
+    if (sessionError || !accessToken) {
+      message.textContent = "PLEASE LOG IN TO VIEW YOUR CLOSET.";
+      renderEmpty("YOUR CLOTHING COULD NOT BE LOADED.");
+      return;
+    }
+
+    const saved = await loadPersistentWardrobe(accessToken);
+    grid.replaceChildren();
+    if (saved.items.length === 0) {
+      message.textContent = "YOUR CLOSET IS EMPTY.";
+      renderEmpty("ADD CLOTHING FROM YOUR PROFILE TO GET STARTED.");
+      return;
+    }
+
+    message.textContent = `${saved.items.length} CLOTHING ITEMS`;
+    for (const item of saved.items) {
+      const card = document.createElement("article");
+      card.className = "closet-item";
+
+      const imageFrame = document.createElement("div");
+      imageFrame.className = "item-image";
+      const previewUrl = item.cleanPreviewUrl || item.originalPreviewUrl;
+      if (previewUrl) {
+        const image = document.createElement("img");
+        image.src = previewUrl;
+        image.alt = item.cleanPreviewUrl
+          ? `Clean clothing preview of ${item.name}`
+          : `Original image of ${item.name}`;
+        image.loading = "lazy";
+        imageFrame.appendChild(image);
+      } else {
+        imageFrame.textContent = "ORIGINAL IMAGE UNAVAILABLE";
+      }
+
+      const info = document.createElement("div");
+      info.className = "item-info";
+      const category = document.createElement("span");
+      category.textContent = categoryLabel(normalizeClothingCategory(item.category) ?? "other");
+      const name = document.createElement("h2");
+      name.textContent = item.name;
+      const status = document.createElement("p");
+      status.className = "closet-readiness";
+      status.textContent = [
+        `WOMAN — ${
+          item.aiReadyAssets.woman?.generationVersion === CURRENT_CLOTHING_ASSET_VERSION &&
+          item.aiReadyAssets.woman.characterId === saved.primaryCharacterId
+            ? "AI READY"
+            : "NOT AI READY"
+        }`,
+        `MAN — ${
+          item.aiReadyAssets.man?.generationVersion === CURRENT_CLOTHING_ASSET_VERSION &&
+          item.aiReadyAssets.man.characterId === saved.primaryCharacterId
+            ? "AI READY"
+            : "NOT AI READY"
+        }`,
+      ].join(" · ");
+      info.append(category, name, status);
+      const deleteButton = document.createElement("button");
+      deleteButton.type = "button";
+      deleteButton.className = "delete-item-button";
+      deleteButton.textContent = "DELETE ITEM";
+      deleteButton.addEventListener("click", () => {
+        void (async () => {
+          const { data: freshSession, error } = await supabase.auth.getSession();
+          const accessToken = freshSession.session?.access_token;
+          if (error || !accessToken) throw new Error("PLEASE LOG IN AGAIN BEFORE REMOVING THIS ITEM.");
+          const confirmed = await confirmAndDeleteWardrobeItem(accessToken, item);
+          if (!confirmed) return;
+          card.remove();
+          const remainingCount = grid.querySelectorAll(".closet-item").length;
+          message.textContent = remainingCount
+            ? `${item.name.toUpperCase()} REMOVED. ${remainingCount} CLOTHING ITEMS REMAIN.`
+            : "YOUR CLOSET IS EMPTY.";
+          if (!remainingCount) renderEmpty("ADD CLOTHING FROM YOUR PROFILE TO GET STARTED.");
+        })().catch((error) => {
+          console.error("Could not delete this clothing item.", error);
+          message.textContent = error instanceof Error
+            ? error.message
+            : "COULD NOT REMOVE THIS CLOTHING ITEM.";
+        });
+      });
+      info.appendChild(deleteButton);
+      card.append(imageFrame, info);
+      grid.appendChild(card);
+    }
+  }
+
+  void loadCloset().catch((error) => {
+    console.error("Could not load the CLOSET library.", error);
+    message.textContent = "COULD NOT LOAD YOUR CLOSET. PLEASE TRY AGAIN.";
+    renderEmpty("YOUR CLOTHING COULD NOT BE LOADED.");
+  });
+</script>

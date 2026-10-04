@@ -1,0 +1,23 @@
+<script>
+  import { supabase } from "../lib/supabase";
+
+  async function applySavedProfileTheme() {
+    if (!supabase) return;
+    const { data: session, error: sessionError } = await supabase.auth.getSession();
+    if (sessionError || !session.session) return;
+    const { data: profile, error } = await supabase
+      .from("profiles")
+      .select("gender")
+      .eq("user_id", session.session.user.id)
+      .maybeSingle();
+    if (error) {
+      console.error("Could not load the profile color theme.", error);
+      return;
+    }
+    if (profile?.gender === "woman" || profile?.gender === "man") {
+      document.documentElement.dataset.profileTheme = profile.gender;
+    }
+  }
+
+  void applySavedProfileTheme();
+</script>

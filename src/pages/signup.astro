@@ -1,0 +1,201 @@
+---
+import Layout from "../layouts/Layout.astro";
+import "../styles/signup.css";
+---
+
+<Layout title="Closet — Create Your Closet">
+
+  <div class="auth-page">
+
+    <div class="auth-window">
+
+      <div class="auth-window-bar">
+        <span>CREATE_CLOSET.EXE</span>
+
+        <div>
+          <span>−</span>
+          <span>□</span>
+          <span>×</span>
+        </div>
+      </div>
+
+      <div class="auth-content">
+
+        <p class="auth-eyebrow">
+          WELCOME TO CLOSET
+        </p>
+
+        <h1>Create your closet.</h1>
+
+        <p class="auth-intro">
+          Build your personal digital wardrobe and start styling.
+        </p>
+
+        <form class="signup-form">
+
+          <label>
+            NAME
+
+            <input
+              type="text"
+              id="signup-name"
+              placeholder="Your name"
+              required
+            />
+          </label>
+
+          <label>
+            MODEL TYPE
+            <select id="signup-gender" required>
+              <option value="">Choose Woman or Man</option>
+              <option value="woman">Woman</option>
+              <option value="man">Man</option>
+            </select>
+          </label>
+
+          <label>
+            EMAIL
+
+            <input
+              type="email"
+              id="signup-email"
+              placeholder="your@email.com"
+              required
+            />
+          </label>
+
+          <label>
+            PASSWORD
+
+            <input
+              type="password"
+              id="signup-password"
+              placeholder="••••••••"
+              required
+            />
+          </label>
+
+          <button type="submit" id="signup-submit">
+            CREATE CLOSET ↗
+          </button>
+
+        </form>
+
+        <p class="auth-message" id="signup-message" role="alert" aria-live="polite"></p>
+
+        <p class="auth-switch">
+          Already have a closet?
+
+          <a href="/login">
+            LOG IN
+          </a>
+        </p>
+
+      </div>
+
+    </div>
+
+  </div>
+
+</Layout>
+
+<script>
+  import { supabase } from "../lib/supabase";
+
+  const signupForm =
+    document.querySelector(".signup-form") as HTMLFormElement;
+
+  const signupName =
+    document.querySelector("#signup-name") as HTMLInputElement;
+
+  const signupEmail =
+    document.querySelector("#signup-email") as HTMLInputElement;
+
+  const signupPassword =
+    document.querySelector("#signup-password") as HTMLInputElement;
+  const signupGender =
+    document.querySelector("#signup-gender") as HTMLSelectElement;
+
+  const signupButton =
+    document.querySelector("#signup-submit") as HTMLButtonElement;
+
+  const signupMessage =
+    document.querySelector("#signup-message") as HTMLElement;
+
+  signupForm?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+
+    signupMessage.textContent = "";
+
+    if (
+      !signupName.value.trim() ||
+      !signupEmail.value.trim() ||
+      !signupPassword.value ||
+      (signupGender.value !== "woman" && signupGender.value !== "man")
+    ) {
+      signupMessage.textContent = "Enter your name, email, and password to create your closet.";
+      return;
+    }
+
+    if (!supabase) {
+      signupMessage.textContent = "Authentication is not configured. Add the Supabase URL and public anon key to your local .env file.";
+      return;
+    }
+
+    signupButton.disabled = true;
+    signupButton.textContent = "CREATING CLOSET...";
+
+    try {
+      const { data, error } = await supabase.auth.signUp({
+        email: signupEmail.value.trim(),
+        password: signupPassword.value,
+        options: {
+          data: {
+            name: signupName.value.trim(),
+            gender: signupGender.value,
+          },
+        },
+      });
+
+      if (error) {
+        console.warn("Supabase signup failed.", error);
+        const errorMessage = error.message.toLowerCase();
+
+        if (
+          error.code === "user_already_exists" ||
+          errorMessage.includes("already registered") ||
+          errorMessage.includes("already been registered")
+        ) {
+          signupMessage.textContent = "An account with this email already exists. Try logging in instead.";
+        } else if (
+          error.code === "weak_password" ||
+          errorMessage.includes("password should be")
+        ) {
+          signupMessage.textContent = "Choose a stronger password and try again.";
+        } else if (
+          error.code === "email_address_invalid" ||
+          errorMessage.includes("invalid email")
+        ) {
+          signupMessage.textContent = "Enter a valid email address.";
+        } else {
+          signupMessage.textContent = "We couldn't create your closet. Please check your details and try again.";
+        }
+        return;
+      }
+
+      if (data.session) {
+        window.location.href = "/profile";
+        return;
+      }
+
+      signupMessage.textContent =
+        "Your account was created. Check your email to confirm it, then log in.";
+    } catch (error) {
+      console.error("Unexpected error while creating an account.", error);
+      signupMessage.textContent = "We couldn't connect to authentication. Please try again.";
+    } finally {
+      signupButton.disabled = false;
+      signupButton.textContent = "CREATE CLOSET ↗";
+    }
+  });
+</script>

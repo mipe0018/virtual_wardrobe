@@ -1,0 +1,160 @@
+---
+import Layout from "../layouts/Layout.astro";
+import "../styles/login.css";
+---
+
+<Layout title="Closet — Log In">
+
+  <div class="auth-page">
+
+    <div class="auth-window">
+
+      <div class="auth-window-bar">
+        <span>LOGIN.EXE</span>
+
+        <div>
+          <span>−</span>
+          <span>□</span>
+          <span>×</span>
+        </div>
+      </div>
+
+      <div class="auth-content">
+
+        <p class="auth-eyebrow">WELCOME BACK</p>
+
+        <h1>Open your closet.</h1>
+
+        <p class="auth-intro">
+          Log in to access your digital wardrobe and saved outfits.
+        </p>
+
+        <form class="login-form">
+
+          <label>
+            EMAIL
+
+            <input
+              type="email"
+              id="login-email"
+              placeholder="your@email.com"
+              required
+            />
+          </label>
+
+          <label>
+            PASSWORD
+
+            <input
+              type="password"
+              id="login-password"
+              placeholder="••••••••"
+              required
+            />
+          </label>
+
+          <button type="submit" id="login-submit">
+            LOG IN ↗
+          </button>
+
+        </form>
+
+        <p class="auth-message" id="login-message" role="alert" aria-live="polite"></p>
+
+        <p class="auth-switch">
+          Don't have a closet yet?
+
+          <a href="/signup">
+            CREATE ONE
+          </a>
+        </p>
+
+      </div>
+
+    </div>
+
+  </div>
+
+</Layout>
+
+<script>
+  import { supabase } from "../lib/supabase";
+
+  const loginForm =
+    document.querySelector(".login-form") as HTMLFormElement;
+
+  const loginEmail =
+    document.querySelector("#login-email") as HTMLInputElement;
+
+  const loginPassword =
+    document.querySelector("#login-password") as HTMLInputElement;
+
+  const loginButton =
+    document.querySelector("#login-submit") as HTMLButtonElement;
+
+  const loginMessage =
+    document.querySelector("#login-message") as HTMLElement;
+
+  const setLoginMessage = (message: string) => {
+    loginMessage.textContent = message;
+  };
+
+  const searchParams = new URLSearchParams(window.location.search);
+  if (searchParams.get("reason") === "session") {
+    setLoginMessage("We couldn't verify your session. Please log in again.");
+  } else if (searchParams.get("reason") === "config") {
+    setLoginMessage("Authentication is not configured. Add the Supabase URL and public anon key to your local .env file.");
+  }
+
+  loginForm?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+
+    setLoginMessage("");
+
+    if (!loginEmail.value.trim() || !loginPassword.value) {
+      setLoginMessage("Enter your email and password to log in.");
+      return;
+    }
+
+    if (!supabase) {
+      setLoginMessage("Authentication is not configured. Add the Supabase URL and public anon key to your local .env file.");
+      return;
+    }
+
+    loginButton.disabled = true;
+    loginButton.textContent = "LOGGING IN...";
+
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: loginEmail.value.trim(),
+        password: loginPassword.value,
+      });
+
+      if (error) {
+        console.warn("Supabase login failed.", error);
+        if (
+          error.code === "invalid_credentials" ||
+          error.message.toLowerCase().includes("invalid login credentials")
+        ) {
+          setLoginMessage("Email or password is incorrect.");
+        } else {
+          setLoginMessage("We couldn't log you in. Please try again.");
+        }
+        return;
+      }
+
+      if (!data.session) {
+        setLoginMessage("We couldn't start your session. Check your email verification and try again.");
+        return;
+      }
+
+      window.location.href = "/profile";
+    } catch (error) {
+      console.error("Unexpected error while logging in.", error);
+      setLoginMessage("We couldn't connect to authentication. Please try again.");
+    } finally {
+      loginButton.disabled = false;
+      loginButton.textContent = "LOG IN ↗";
+    }
+  });
+</script>

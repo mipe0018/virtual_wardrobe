@@ -1,0 +1,142 @@
+---
+import Layout from "../layouts/Layout.astro";
+import "../styles/home.css";
+---
+
+<Layout title="Closet — Your Digital Wardrobe">
+  <div class="home">
+    <section class="home-hero">
+      <div class="hero-copy">
+        <p class="eyebrow">WELCOME TO YOUR DIGITAL CLOSET</p>
+
+        <h1>Your closet.<br />Reimagined.</h1>
+
+        <p class="hero-text">
+          Upload your clothes, create outfits and see your wardrobe in a
+          completely new way.
+        </p>
+
+        <div class="hero-actions">
+          <a href="/signup" class="primary-button">
+            CREATE YOUR CLOSET ↗
+          </a>
+
+          <a href="#how-it-works" class="secondary-button">
+            HOW IT WORKS
+          </a>
+        </div>
+      </div>
+
+      <div class="hero-computer">
+        <div class="computer-top">
+          <span>♡ CLOSET</span>
+
+          <div class="computer-controls">
+            <span>−</span>
+            <span>□</span>
+            <span>×</span>
+          </div>
+        </div>
+
+        <div class="computer-screen">
+          <div class="screen-label">STYLE STUDIO</div>
+
+          <div class="screen-model">
+            <div class="model-head"></div>
+            <div class="model-body"></div>
+            <div class="model-skirt"></div>
+            <div class="model-leg model-leg--left"></div>
+            <div class="model-leg model-leg--right"></div>
+          </div>
+
+          <div class="screen-items">
+            <span>TOPS</span>
+            <span>BOTTOMS</span>
+            <span>DRESSES</span>
+            <span>SHOES</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="how-it-works" id="how-it-works">
+      <div class="section-heading">
+        <p class="eyebrow">HOW IT WORKS</p>
+        <h2>Your wardrobe, but smarter.</h2>
+      </div>
+
+      <div class="steps">
+        <article class="step">
+          <span class="step-number">01</span>
+          <div class="step-icon">↑</div>
+          <h3>UPLOAD</h3>
+          <p>Add photos of your clothes or import items from your favourite stores.</p>
+        </article>
+
+        <article class="step">
+          <span class="step-number">02</span>
+          <div class="step-icon">♡</div>
+          <h3>ORGANIZE</h3>
+          <p>Build your own digital wardrobe with clothes, shoes and accessories.</p>
+        </article>
+
+        <article class="step">
+          <span class="step-number">03</span>
+          <div class="step-icon">✦</div>
+          <h3>STYLE</h3>
+          <p>Mix and match everything in your wardrobe to create new outfits.</p>
+        </article>
+
+        <article class="step">
+          <span class="step-number">04</span>
+          <div class="step-icon">◎</div>
+          <h3>TRY IT ON</h3>
+          <p>Use yourself as the model and see how your outfits could look.</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="home-about" id="about">
+      <div class="about-window">
+        <div class="window-bar">
+          <span>ABOUT CLOSET</span>
+
+          <div>
+            <span>−</span>
+            <span>□</span>
+            <span>×</span>
+          </div>
+        </div>
+
+        <div class="about-content">
+          <p class="eyebrow">A NEW WAY TO GET DRESSED</p>
+
+          <h2>
+            The fashion computer<br />
+            you always wanted.
+          </h2>
+
+          <p>
+            CLOSET combines the playful feeling of a 90s fashion computer
+            with modern digital wardrobe technology.
+          </p>
+
+          <p>
+            Your clothes live here. Your outfits live here. Eventually,
+            even your own virtual try-on model.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <section class="home-cta">
+      <p class="eyebrow">READY?</p>
+
+      <h2>Build your closet.</h2>
+
+      <a href="/signup" class="primary-button">
+        GET STARTED ↗
+      </a>
+    </section>
+  </div>
+</Layout>

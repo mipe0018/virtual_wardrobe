@@ -1,0 +1,398 @@
+.home {
+  overflow: hidden;
+}
+
+.home-hero {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: clamp(4rem, 9vw, 8rem) 1.5rem;
+
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  align-items: center;
+  gap: clamp(3rem, 7vw, 7rem);
+}
+
+.eyebrow {
+  margin: 0 0 1rem;
+
+  color: var(--pink-600);
+  font-family: "DM Mono", monospace;
+  font-size: 0.65rem;
+  letter-spacing: 0.12em;
+}
+
+.hero-copy h1 {
+  margin: 0;
+
+  font-family: "Playfair Display", serif;
+  font-size: clamp(3.5rem, 7vw, 6rem);
+  font-weight: 500;
+  line-height: 0.95;
+}
+
+.hero-text {
+  max-width: 480px;
+  margin: 2rem 0;
+
+  color: var(--grey-700);
+  font-size: 1rem;
+  line-height: 1.7;
+}
+
+.hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.8rem;
+}
+
+.primary-button,
+.secondary-button {
+  padding: 0.85rem 1.2rem;
+
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+
+  border-radius: 999px;
+
+  font-family: "DM Mono", monospace;
+  font-size: 0.65rem;
+  text-decoration: none;
+}
+
+.primary-button {
+  border: 1px solid var(--border);
+  background: var(--pink-400);
+}
+
+.primary-button:hover {
+  background: var(--pink-500);
+}
+
+.secondary-button {
+  border: 1px solid var(--border);
+  background: var(--cream);
+}
+
+.secondary-button:hover {
+  background: var(--pink-100);
+}
+
+/* COMPUTER */
+
+.hero-computer {
+  border: 2px solid var(--border);
+  background: var(--grey-200);
+  box-shadow: var(--pixel-shadow);
+}
+
+.computer-top {
+  padding: 0.7rem 0.8rem;
+
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+
+  border-bottom: 2px solid var(--border);
+  background: var(--pink-300);
+
+  font-family: "DM Mono", monospace;
+  font-size: 0.7rem;
+}
+
+.computer-controls {
+  display: flex;
+  gap: 0.3rem;
+}
+
+.computer-controls span {
+  width: 18px;
+  height: 18px;
+
+  display: grid;
+  place-items: center;
+
+  border: 1px solid var(--border);
+  background: var(--cream);
+}
+
+.computer-screen {
+  position: relative;
+
+  min-height: 480px;
+  margin: 1rem;
+  padding: 1rem;
+
+  overflow: hidden;
+
+  border: 2px solid var(--border);
+  background: #f4ddea;
+}
+
+.screen-label {
+  font-family: "DM Mono", monospace;
+  font-size: 0.65rem;
+}
+
+.screen-model {
+  position: absolute;
+  left: 50%;
+  bottom: 2rem;
+
+  width: 230px;
+  height: 390px;
+
+  transform: translateX(-50%);
+}
+
+.model-head {
+  position: absolute;
+  top: 0;
+  left: 50%;
+
+  width: 80px;
+  height: 90px;
+
+  transform: translateX(-50%);
+
+  border: 2px solid var(--border);
+  border-radius: 45% 45% 50% 50%;
+
+  background: #f4c7b9;
+}
+
+.model-body {
+  position: absolute;
+  top: 80px;
+  left: 50%;
+
+  width: 120px;
+  height: 150px;
+
+  transform: translateX(-50%);
+
+  border: 2px solid var(--border);
+  border-radius: 50px 50px 20px 20px;
+
+  background: var(--pink-400);
+}
+
+.model-skirt {
+  position: absolute;
+  top: 210px;
+  left: 50%;
+
+  width: 170px;
+  height: 100px;
+
+  transform: translateX(-50%);
+
+  border: 2px solid var(--border);
+
+  background: var(--purple);
+
+  clip-path: polygon(15% 0, 85% 0, 100% 100%, 0 100%);
+}
+
+.model-leg {
+  position: absolute;
+  top: 300px;
+
+  width: 35px;
+  height: 90px;
+
+  border: 2px solid var(--border);
+  background: #f4c7b9;
+}
+
+.model-leg--left {
+  left: 78px;
+}
+
+.model-leg--right {
+  right: 78px;
+}
+
+.screen-items {
+  position: absolute;
+  right: 1rem;
+  bottom: 1rem;
+  left: 1rem;
+
+  display: flex;
+  justify-content: space-between;
+
+  font-family: "DM Mono", monospace;
+  font-size: 0.55rem;
+}
+
+/* HOW IT WORKS */
+
+.how-it-works {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 6rem 1.5rem;
+}
+
+.section-heading {
+  max-width: 600px;
+  margin-bottom: 3rem;
+}
+
+.section-heading h2,
+.home-about h2,
+.home-cta h2 {
+  margin: 0;
+
+  font-family: "Playfair Display", serif;
+  font-size: clamp(2.5rem, 5vw, 4rem);
+  font-weight: 500;
+  line-height: 1;
+}
+
+.steps {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  border-top: 1px solid var(--border);
+}
+
+.step {
+  position: relative;
+  padding: 2rem 1.5rem;
+  border-right: 1px solid var(--border);
+}
+
+.step:last-child {
+  border-right: 0;
+}
+
+.step-number {
+  font-family: "DM Mono", monospace;
+  font-size: 0.65rem;
+}
+
+.step-icon {
+  margin: 3rem 0 1.5rem;
+
+  font-size: 2rem;
+  color: var(--pink-500);
+}
+
+.step h3 {
+  margin: 0 0 0.8rem;
+
+  font-family: "DM Mono", monospace;
+  font-size: 0.8rem;
+}
+
+.step p {
+  margin: 0;
+
+  color: var(--grey-500);
+  font-size: 0.85rem;
+  line-height: 1.6;
+}
+
+/* ABOUT */
+
+.home-about {
+  padding: 6rem 1.5rem;
+}
+
+.about-window {
+  max-width: 900px;
+  margin: 0 auto;
+
+  border: 2px solid var(--border);
+  background: var(--cream);
+  box-shadow: var(--pixel-shadow);
+}
+
+.window-bar {
+  padding: 0.7rem 1rem;
+
+  display: flex;
+  justify-content: space-between;
+
+  border-bottom: 2px solid var(--border);
+  background: var(--pink-300);
+
+  font-family: "DM Mono", monospace;
+  font-size: 0.65rem;
+}
+
+.window-bar div {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.about-content {
+  padding: clamp(2rem, 6vw, 5rem);
+}
+
+.about-content h2 {
+  margin-bottom: 2rem;
+}
+
+.about-content p:not(.eyebrow) {
+  max-width: 600px;
+
+  color: var(--grey-700);
+  line-height: 1.7;
+}
+
+/* CTA */
+
+.home-cta {
+  padding: 8rem 1.5rem;
+
+  display: flex;
+  align-items: center;
+  flex-direction: column;
+
+  text-align: center;
+}
+
+.home-cta h2 {
+  margin-bottom: 2rem;
+}
+
+/* RESPONSIVE */
+
+@media (max-width: 850px) {
+  .home-hero {
+    grid-template-columns: 1fr;
+  }
+
+  .steps {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .step:nth-child(2) {
+    border-right: 0;
+  }
+
+  .step:nth-child(-n + 2) {
+    border-bottom: 1px solid var(--border);
+  }
+}
+
+@media (max-width: 550px) {
+  .steps {
+    grid-template-columns: 1fr;
+  }
+
+  .step {
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .step:last-child {
+    border-bottom: 0;
+  }
+
+  .computer-screen {
+    min-height: 400px;
+  }
+}

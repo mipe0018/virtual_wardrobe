@@ -1,0 +1,69 @@
+.closet-library-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.closet-library-heading h1 {
+  margin: 0;
+  font-family: "Playfair Display", serif;
+}
+
+.closet-library-message,
+.closet-readiness,
+.closet-library-empty {
+  font-family: "DM Mono", monospace;
+  font-size: 0.65rem;
+  font-weight: 700;
+}
+
+.closet-library-message {
+  min-height: 1.2rem;
+  color: var(--grey-700);
+}
+
+.closet-library .closet-grid {
+  margin-top: 1.25rem;
+}
+
+.closet-library .item-image {
+  aspect-ratio: 1 / 1.1;
+}
+
+.closet-library .item-image img {
+  object-fit: contain;
+}
+
+.closet-library .item-info h2 {
+  margin: 0.3rem 0 0;
+  font-size: 0.9rem;
+}
+
+.closet-readiness {
+  margin: 0.65rem 0 0;
+  color: var(--grey-700);
+  line-height: 1.5;
+}
+
+.closet-library-empty {
+  grid-column: 1 / -1;
+  padding: 2rem;
+  border: 2px dashed var(--grey-300);
+  background: var(--pink-100);
+  color: var(--grey-700);
+  text-align: center;
+}
+
+@media (max-width: 700px) {
+  .closet-library .closet-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.7rem;
+  }
+
+  .closet-library-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}

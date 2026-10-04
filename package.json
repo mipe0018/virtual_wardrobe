@@ -1,0 +1,23 @@
+{
+  "name": "",
+  "type": "module",
+  "version": "0.0.1",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "astro": "astro"
+  },
+  "dependencies": {
+    "@astrojs/netlify": "^8.2.6",
+    "@supabase/supabase-js": "^2.117.2",
+    "astro": "^7.3.5",
+    "pngjs": "^7.0.0"
+  },
+  "allowScripts": {
+    "esbuild": true
+  }
+}
