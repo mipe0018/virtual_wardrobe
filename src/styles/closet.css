@@ -99,3 +99,42 @@
     flex-direction: column;
   }
 }
+
+.closet-outfit-builder {
+  display: grid;
+  gap: 0.5rem;
+  margin: 1rem 0;
+  padding: 1rem;
+  border: 1px solid currentColor;
+}
+.closet-outfit-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.closet-outfit-form input {
+  flex: 1 1 200px;
+  padding: 0.5rem;
+}
+.closet-outfit-builder button,
+.select-outfit-item-button {
+  cursor: pointer;
+  padding: 0.5rem 0.75rem;
+  font: inherit;
+}
+.closet-outfit-builder button:disabled,
+.select-outfit-item-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+.closet-saved-outfit {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  align-items: center;
+  font-size: 0.8rem;
+}
+.closet-item.is-outfit-selected {
+  outline: 3px solid currentColor;
+  outline-offset: 2px;
+}

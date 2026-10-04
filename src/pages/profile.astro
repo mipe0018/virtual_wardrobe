@@ -93,6 +93,7 @@ import ProfileTheme from "../components/ProfileTheme.astro";
             Upload a source photo to generate your personal AI fashion model.
           </p>
           <div class="character-history" id="character-history" aria-live="polite"></div>
+          <div class="profile-outfits" id="profile-outfits"></div>
         </div>
 
       </div>
@@ -335,6 +336,7 @@ import ProfileTheme from "../components/ProfileTheme.astro";
     type ClothingBaseType,
   } from "../lib/shared/clothing-assets";
   import { DRESSED_GEOMETRY_CONTRACT_VERSION } from "../lib/shared/clothing-geometry";
+  import { initProfileOutfits } from "../lib/client/profile-outfits";
 
   /* ========================================
      PROFILE REFERENCES AND STATE
@@ -723,6 +725,9 @@ import ProfileTheme from "../components/ProfileTheme.astro";
         image.src = model.signedUrl;
         image.alt = "Your AI-generated fashion model";
         modelPreview.appendChild(image);
+        void initProfileOutfits(accessToken, userId, modelPreview).catch((outfitError) => {
+          console.error("Could not load saved outfits.", outfitError);
+        });
         if (profile.gender === "woman" || profile.gender === "man") {
           void cacheDressedCharacter({
             signedUrl: model.signedUrl,

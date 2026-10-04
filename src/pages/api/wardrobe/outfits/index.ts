@@ -60,7 +60,7 @@ export const GET: APIRoute = async ({ request }) => {
 export const POST: APIRoute = async ({ request }) => {
   const authentication = await authenticateSupabaseRequest(request);
   if (!authentication.ok) return jsonError(authentication.message, authentication.status);
-  const { client } = authentication;
+  const { client, user } = authentication;
 
   let body: { name?: unknown; itemIds?: unknown };
   try {
