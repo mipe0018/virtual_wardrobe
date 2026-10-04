@@ -1,3 +1,5 @@
+import { waitForGenerationToFinish } from "./generation-usage";
+import { CURRENT_CLOTHING_ASSET_VERSION } from "../shared/clothing-assets";
 import type {
   ClothingBaseAsset,
   ClothingBaseType,
@@ -126,6 +128,32 @@ export async function processClothingItem(
     error?: string;
     item?: ProcessedWardrobeItem;
   };
+  if (response.status === 202) {
+    // Generation runs in a background function; wait for the server to finish, then read
+    // the persisted asset instead of trusting a response that was never produced.
+    await waitForGenerationToFinish(accessToken, "clothing");
+    const wardrobe = await loadPersistentWardrobe(accessToken);
+    const saved = wardrobe.items.find((entry) => entry.id === item.id);
+    const asset = saved?.aiReadyAssets[item.baseType];
+    if (!saved || !asset || asset.generationVersion !== CURRENT_CLOTHING_ASSET_VERSION) {
+      throw new Error("The clothing generation did not finish. Please try again.");
+    }
+    return {
+      id: saved.id,
+      name: saved.name,
+      category: saved.category,
+      referencePath: asset.referencePath,
+      previewUrl: asset.previewUrl,
+      originalPath: saved.originalPath,
+      originalPreviewUrl: saved.originalPreviewUrl,
+      cleanPreviewPath: saved.cleanPreviewPath,
+      cleanPreviewUrl: saved.cleanPreviewUrl,
+      baseType: item.baseType,
+      characterId: asset.characterId ?? "",
+      generationVersion: asset.generationVersion,
+      cacheHit: false,
+    };
+  }
   if (!response.ok || !result.item) {
     throw new Error(result.error ?? "Could not prepare this clothing item.");
   }
