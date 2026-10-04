@@ -631,6 +631,8 @@
 
 .wardrobe-model .dressed-clothing-layer {
   object-fit: contain;
+  transform: scale(var(--dressed-clothing-scale, 0.56));
+  transform-origin: var(--dressed-clothing-origin, 50% 20%);
 }
 
 /* ========================================
