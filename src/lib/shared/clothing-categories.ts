@@ -1,3 +1,5 @@
+import type { ClothingBaseType } from "./clothing-assets";
+
 export const CLOTHING_CATEGORIES = [
   { value: "tops", label: "Tops", group: "clothing" },
   { value: "shirts", label: "Shirts", group: "clothing" },
@@ -102,6 +104,43 @@ export const DRESSED_ANCHORS = {
 } as const;
 
 export type DressedAnchor = keyof typeof DRESSED_ANCHORS;
+
+/*
+ * Male upper-body anchors.
+ *
+ * DRESSED_ANCHORS stays calibrated to the woman canonical base form, whose shoulder
+ * line sits at canvas y ~= 0.212. The man canonical base form is broader through the
+ * upper body and its shoulder line sits higher, at y ~= 0.176, so reusing the shared
+ * anchors lands male garments below the actual shoulder line. These values re-anchor
+ * the male upper body onto the man base form only.
+ *
+ * knees/ankles/feet are deliberately absent: measured at those heights the two figures
+ * already agree within ~8%, so shifting them would misplace male footwear and socks.
+ * head/face/ears and the hand anchors are also unchanged: both figures begin at the
+ * same head top (y ~= 0.021) and share the same horizontal centre (x ~= 0.5).
+ */
+const MAN_ANCHOR_Y: Partial<Record<DressedAnchor, number>> = {
+  neck: 0.17,
+  dress: 0.175,
+  shoulders: 0.2,
+  torso: 0.25,
+  waist: 0.4,
+  hips: 0.44,
+};
+
+/**
+ * Resolves the anchor a clothing layer attaches to. For `woman` (and any unknown base
+ * type) this returns the shared DRESSED_ANCHORS value unchanged.
+ */
+export function dressedAnchor(
+  anchor: DressedAnchor,
+  baseType?: ClothingBaseType | null
+): { x: number; y: number } {
+  const shared = DRESSED_ANCHORS[anchor];
+  if (baseType !== "man") return shared;
+  const maleY = MAN_ANCHOR_Y[anchor];
+  return maleY === undefined ? shared : { x: shared.x, y: maleY };
+}
 
 export type ClothingPlacement = {
   anchor: DressedAnchor;

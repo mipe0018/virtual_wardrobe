@@ -42,6 +42,12 @@ const MAX_REQUEST_BYTES = 5_800_000;
 const MAX_SOURCE_BYTES = 4 * 1024 * 1024;
 const MAX_ITEM_NAME_LENGTH = 100;
 
+// Development-only opt-in request header. It lets an authorised developer force regeneration
+// of an already AI-ready clothing item without bumping CURRENT_CLOTHING_ASSET_VERSION.
+// Guarded by `import.meta.env.DEV`, which is statically false in production builds, so it
+// cannot be reached by a normal user in any deployed environment.
+const FORCE_REGENERATE_HEADER = "x-dressed-force-regenerate";
+
 type ProcessClothingRequest = {
   id?: unknown;
   name?: unknown;
@@ -338,7 +344,15 @@ export const POST: APIRoute = async ({ request }) => {
     }
     return jsonError("Could not verify whether this item is already AI-ready. Apply the base-type clothing assets migration first.", 503);
   }
+  // Development-only: bypass the cache-hit below so an existing AI-ready item is generated
+  // again with the current clothing logic. Everything after this point is unchanged —
+  // quota reservation, background-job launch, validation, and the storage replacement order
+  // inside `runClothingJob` all run exactly as for a first-time generation.
+  const forceRegenerate =
+    import.meta.env.DEV &&
+    request.headers.get(FORCE_REGENERATE_HEADER) === "1";
   if (
+    !forceRegenerate &&
     existingAsset?.reference_path &&
     existingAsset.generation_version === CURRENT_CLOTHING_ASSET_VERSION
   ) {

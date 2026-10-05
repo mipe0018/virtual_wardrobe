@@ -1,0 +1,1997 @@
+================================================================================
+DRESSED — SUPABASE ARCHITECTURE ANALYSIS (READ-ONLY AUDIT)
+Authentication, database, ownership, deletion, RLS, storage, quotas
+================================================================================
+
+Repository : https://github.com/mipe0018/DRESSED-DUH.git
+Branch     : clothes (HEAD b9a94ca)
+Date       : 2026-10-05
+Status     : ANALYSIS ONLY. No application code, migrations, RLS policies,
+             storage objects, or data were created, modified or deleted.
+             This file is the only artefact added.
+
+Evidence tiers used throughout:
+  [CONFIRMED BY CODE]      read in the current working tree (file:line)
+  [CONFIRMED BY MIGRATION] read in supabase/migrations/*.sql (file:line)
+  [CONFIRMED BY DATABASE]  reserved for facts provable from migration DDL —
+                           NO live database was queried in this audit
+  [CONFIRMED BY STORAGE]   provable from storage code paths / policy SQL
+  [DOCUMENTED INTENT]      stated in a comment, prompt or analysis doc
+  [LIKELY PROBLEM]         strongly supported, not yet observed live
+  [POSSIBLE PROBLEM]       plausible, needs runtime verification
+  [UNKNOWN]                cannot be established from the repository
+
+Scope: derived from the repository only — 12 migrations, the Astro/TS app,
+analysis/ docs. Where the live database must differ (pre-existing tables
+such as `profiles`, bucket policies), that is marked [UNKNOWN].
+
+--------------------------------------------------------------------------------
+TABLE OF CONTENTS (23 sections)
+--------------------------------------------------------------------------------
+ 1. Authentication            13. Migration history
+ 2. Database structure        14. Complete end-to-end data flow
+ 3. User ownership            15. Current vs intended architecture
+ 4. Account deletion          16. Classification of every finding
+ 5. Clothing asset arch.      17. Target database architecture
+ 6. Profile flow              18. Account deletion target
+ 7. Closet flow               19. RLS target
+ 8. DRESSED flow              20. Storage target
+ 9. AI generation             21. Future migration plan
+10. AI quotas                 22. Test plan
+11. Storage                   23. Final recommendation
+12. RLS audit
+
+================================================================================
+1. AUTHENTICATION
+================================================================================
+1.1 How users are created [C-CODE]
+  src/pages/signup.astro:149-158 calls
+    supabase.auth.signUp({ email, password, options: { data: { name, gender } } })
+  `name` and `gender` are stored in auth.users.raw_user_meta_data only.
+  Supabase errors are mapped at signup.astro:160-182; `user_already_exists`
+  / "already registered" is shown as "An account with this email already
+  exists. Try logging in instead." (lines 164-169).
+
+1.2 How users log in [C-CODE]
+  src/pages/login.astro:128 supabase.auth.signInWithPassword(...).
+  Sessions are read via supabase.auth.getSession(); API routes authenticate
+  the Bearer token through authenticateSupabaseRequest
+  (src/lib/server/supabase.ts) returning { client, user } where `client` is a
+  per-user anon-key client (RLS applies as that user). A separate
+  createSupabaseServiceClient() uses SUPABASE_SERVICE_ROLE_KEY for trusted
+  server work (supabase.ts:19-31).
+
+1.3 auth.users <-> application records [C-CODE][C-MIGRATION]
+  auth.users.id is THE user identifier everywhere:
+  profiles.user_id, dressed_characters.user_id, wardrobe_items.user_id,
+  wardrobe_results.user_id, wardrobe_item_ai_assets.user_id (+ legacy),
+  ai_generation_usage.user_id, ai_generation_limit_overrides.user_id.
+  Storage paths are also keyed by the auth uid as first segment
+  (`${userId}/...`), with CHECK constraints split_part(path,'/',1)=user_id
+  on wardrobe_items paths (0001:174-176, 0002:20-25, 0005:16-21) and on
+  wardrobe_item_ai_assets.reference_path (0002:45-46, 0010:43).
+  Composite keys (user_id, id) let child tables reference parents without
+  cross-user leakage (dressed_characters, wardrobe_items, wardrobe_results,
+  saved_dressed_outfits all PK (user_id, id)).
+
+1.4 How profiles are created [C-CODE]
+  NO database trigger and NO server endpoint inserts into `profiles` in this
+  repository. The row is created lazily by the CLIENT:
+    src/pages/profile.astro:633-646 — if the select returns no row on profile
+    load, the page INSERTs { user_id, name, gender } from auth user_metadata
+    (name falls back to the email prefix).
+  The `profiles` table PREDATES all repo migrations: 202610040001:3 states
+  "source_photo_path, model_photo_path, and model_generation_status already
+  exist on profiles"; it only ALTERs the table (adds `gender`, check
+  constraint and the gender-lock trigger, lines 5-39).
+  => CREATE TABLE, RLS policies and any auth trigger for `profiles` are NOT
+     in the repository [UNKNOWN — must be read from the live database].
+     Provable: the client can SELECT/INSERT(when missing)/UPDATE its own
+     profile row, so own-row policies must exist [INFERENCE from C-CODE].
+
+1.5 Profile gender lock [C-MIGRATION]
+  trigger profiles_gender_is_locked (0001:36-39) raises on UPDATE when
+  old.gender IS NOT NULL and new.gender differs. First set is allowed
+  (profile.astro:674/861, or at creation 633-646). Gender — and therefore
+  base type — is immutable afterwards.
+
+1.6 Deleting a profile vs deleting an Auth user [C-CODE]
+  * The app contains NO code that deletes a `profiles` row and NO code that
+    deletes an auth user (no auth.admin.deleteUser in src/; the only
+    auth.admin call in the repo is scripts/set-owner.mjs, which only updates
+    app_metadata.is_owner).
+  * "Deleting the profile" can therefore only happen outside the app
+    (dashboard / SQL console).
+  * Deleting a profiles row does NOT delete auth.users and does NOT delete
+    characters, items, assets, outfits or storage — none of them reference
+    `profiles`; all reference auth.users. [C-MIGRATION]
+  * Deleting an auth.users row WOULD cascade most tables (section 4), but
+    storage files have no DB-side deletion. [C-MIGRATION][C-CODE]
+
+1.7 THE "USER ALREADY EXISTS" PROBLEM — exact cause
+  1. The app offers no account-deletion path; whatever deleted "the
+     profile" could not have removed the auth.users row [C-CODE].
+  2. supabase.auth.signUp() enforces email uniqueness in auth.users; the
+     surviving (possibly unconfirmed) auth row makes signUp fail with
+     `user_already_exists` / "already registered" [C-CODE — this exact
+     error is matched at signup.astro:164-169].
+  3. The UI shows "An account with this email already exists. Try logging
+     in instead." (signup.astro:169).
+  ROOT CAUSE in one sentence: PROFILE DELETION IS NOT ACCOUNT DELETION —
+  `profiles` is a soft application record with no cascade to auth.users,
+  while signup uniqueness lives entirely in auth.users, which nothing in the
+  system ever deletes. [CONFIRMED BY CODE]
+  Contributing facts [C-CODE]:
+   - There is no /api/profile DELETE and no auth.admin.deleteUser call, so
+     users cannot delete their own account from the product at all.
+   - A dashboard deletion of only the profile row leaves auth.users AND all
+     DRESSED data intact: the old account can still log in, and the profile
+     row silently RE-INSERTS on the next /profile visit
+     (profile.astro:633-646) — while remaining permanently blocked from
+     re-signup with that email.
+   - An earlier never-confirmed signup also leaves a pending auth.users row
+     that blocks re-signup the same way [POSSIBLE PROBLEM — depends on the
+     project's email-confirmation setting, UNKNOWN from the repo].
+
+================================================================================
+2. DATABASE STRUCTURE (COMPLETE TABLE INVENTORY)
+================================================================================
+Only tables actually established by the repository are listed. Column facts
+come from migrations; `profiles` is only partially known.
+
+2.1 profiles (PRE-EXISTING — partially UNKNOWN)
+  Purpose : application profile; source of truth for gender/base type, photo
+            paths, character generation status.
+  Created : BEFORE the repo migrations (0001:1-3 only ALTERs it).
+  Known columns [C-MIGRATION/C-CODE]:
+    user_id uuid (PK — every query uses `.eq("user_id",...)`; insert at
+      profile.astro:640-646; exact definition/ON DELETE [UNKNOWN — not in
+      repo], likely references auth.users)
+    name, username, favourite_style text (profile.astro:617-646)
+    gender text CHECK (null or 'woman','man') (0001:5-21)
+    source_photo_path text (profile-images; api/profile/source-photo.ts:79-92)
+    model_photo_path text (model-images; updated by RPCs)
+    model_generation_status text ('pending'|'processing'|'completed'|
+      'failed' — personal-model.ts:156-160, character-job.ts:56-59)
+  Trigger: profiles_gender_is_locked (0001:36-39) — gender immutable.
+  RLS    : [UNKNOWN — not in repo]; own-row policies must exist because the
+           client SELECT/INSERT/UPDATEs its own row [INFERENCE from C-CODE].
+
+2.2 dressed_characters [C-MIGRATION 0001:41-64, amended 0012]
+  Purpose : one row per generated DRESSED character (the personal model).
+  Columns : user_id uuid NOT NULL REFERENCES auth.users(id) ON DELETE
+            CASCADE; id uuid DEFAULT gen_random_uuid(); model_path text NOT
+            NULL (CHECK first segment = user_id); gender text NOT NULL
+            CHECK ('woman','man'); is_primary bool DEFAULT false;
+            created_at; geometry_contract_version text NOT NULL DEFAULT
+            'normalized-v1' CHECK ('legacy','normalized-v1') [0012:4-17].
+  PK      : (user_id, id).
+  Unique  : dressed_characters_one_primary_per_user on (user_id) WHERE
+            is_primary (0001:53-55).
+  RLS     : SELECT own row only (0001:58-62); everything else revoked;
+            writes only via SECURITY DEFINER RPCs publish_dressed_character
+            / set_primary_dressed_character / delete_dressed_character.
+
+2.3 wardrobe_items [C-MIGRATION 0001:169-215, 0002, 0005, 0013]
+  Purpose : one row per uploaded clothing item (the CLOSET).
+  Columns : user_id NOT NULL REFERENCES auth.users ON DELETE CASCADE;
+            id text NOT NULL; name CHECK 1..100; category CHECK (22
+            categories; 'socks' added by 0013); reference_path text (NOT
+            NULL dropped by 0002:9-10 — legacy AI-ready path); original_path
+            (0002:6-7, owner CHECK); preview_path (0005:5-6, owner CHECK);
+            created_at, updated_at.
+  PK      : (user_id, id) — item id is application-generated text, unique
+            only WITHIN a user.
+  RLS     : full CRUD own-row with path checks on insert/update
+            (0001:180-214).
+  Trigger : AFTER DELETE -> remove_saved_outfits_for_deleted_item
+            (0012:166-185) — deletes any saved outfit containing the item.
+
+2.4 wardrobe_results [C-MIGRATION 0001:216-255, amended 0010:10-29]
+  Purpose : persisted AI outfit/try-on result images (dress-model.ts:331).
+  Columns : user_id NOT NULL REFERENCES auth.users ON DELETE CASCADE;
+            id uuid; item_ids text[] CHECK 1..5; result_path CHECK owner;
+            created_at; character_id uuid NULL + outfit_key text (0010);
+            FK (user_id, character_id) -> dressed_characters ON DELETE
+            CASCADE (0010:22-26).
+  PK      : (user_id, id).
+  RLS     : SELECT/INSERT/DELETE own row (0001:228-255); NO UPDATE policy.
+
+2.5 wardrobe_item_ai_assets (CURRENT, reusable per base type)
+  [C-MIGRATION 0010:31-62]
+  Purpose : the AI-ready transparent clothing LAYER for an item, keyed by
+            base type ('woman'|'man') — THE "reusable clothing asset".
+  Columns : user_id NOT NULL REFERENCES auth.users ON DELETE CASCADE;
+            item_id text; base_type CHECK ('woman','man'); reference_path
+            NOT NULL CHECK owner; generation_version int NOT NULL CHECK >0;
+            created_at, updated_at.
+  PK      : (user_id, item_id, base_type) — exactly ONE asset per item per
+            base type (upsert replaces in place).
+  FK      : (user_id, item_id) -> wardrobe_items ON DELETE CASCADE.
+  RLS     : SELECT + DELETE own row (0010:48-58); INSERT/UPDATE granted to
+            service_role ONLY (0010:60-62) — clients cannot write assets;
+            server jobs use the service client.
+
+2.6 wardrobe_item_ai_assets_legacy (frozen, character-bound)
+  [C-MIGRATION 0002:30-94, renamed by 0010:3-8]
+  Purpose : OLD per-character asset rows, preserved as legacy data.
+  Columns : user_id (NO direct auth.users FK — 0002:31 has no `references`;
+            cascades transitively through its two FKs [C-MIGRATION]);
+            item_id; character_id; reference_path; created_at.
+  PK      : (user_id, item_id, character_id).
+  FKs     : (user_id,item_id) -> wardrobe_items CASCADE;
+            (user_id,character_id) -> dressed_characters CASCADE.
+  RLS     : own-row SELECT/INSERT/UPDATE/DELETE + path checks (0002:56-94).
+
+2.7 saved_dressed_outfits [C-MIGRATION 0012:19-51]
+  Purpose : browser-composed outfits saved for the fitting room (no AI).
+  Columns : user_id NOT NULL; id uuid; character_id uuid NOT NULL;
+            base_type CHECK ('woman','man'); name CHECK 1..80; outfit_key
+            text (base_type + sorted item ids); item_ids text[] CHECK 1..5;
+            created_at, updated_at.
+  PK      : (user_id, id); UNIQUE (user_id, character_id, outfit_key).
+  FK      : (user_id, character_id) -> dressed_characters ON DELETE CASCADE.
+  NOTE    : user_id has NO direct FK to auth.users — it cascades only
+            transitively through dressed_characters [CONFIRMED BY MIGRATION].
+  RLS     : SELECT + DELETE own row; INSERT only via SECURITY DEFINER RPC
+            save_dressed_outfit (0012:53-164, bugfixed by 0014).
+  NOTE    : item_ids are plain text — NOT foreign keys. Integrity is only
+            via the AFTER DELETE trigger on wardrobe_items (0012:166-185).
+
+2.8 dressed_base_forms [C-MIGRATION 0010:64-89]
+  Purpose : registry of the canonical master form files.
+  Columns : base_type PK CHECK ('woman','man'); storage_path text UNIQUE
+            CHECK restricted to the two system-reference/base-forms paths;
+            created_at. Global reference data (no user ownership).
+  RLS     : SELECT to authenticated (using true); no writes allowed.
+
+2.9 ai_generation_limits [C-MIGRATION 0001:256-266, updated 0015:6-7]
+  Purpose : global free limits per generation type.
+  Columns : generation_type PK CHECK ('character','clothing','tryon');
+            free_limit integer NOT NULL CHECK >=0.
+  Current values [C-MIGRATION]: character 1, clothing 3, tryon 1 (0015).
+  RLS     : SELECT for all authenticated (using true).
+
+2.10 ai_generation_usage [C-MIGRATION 0001:257-277]
+  Purpose : per-user counters + in-progress lock (one row per user+type).
+  Columns : user_id NOT NULL REFERENCES auth.users ON DELETE CASCADE;
+            generation_type NOT NULL REFERENCES ai_generation_limits;
+            used_count int DEFAULT 0 CHECK >=0; in_progress bool;
+            started_at (doubles as the reservation token); updated_at.
+  PK      : (user_id, generation_type).
+  RLS     : SELECT own row only; writes only via SECURITY DEFINER functions.
+
+2.11 ai_generation_limit_overrides [C-MIGRATION 202610050001:16-33]
+  Purpose : per-user clothing quota override (Phase 2 test account).
+  Columns : user_id PK REFERENCES auth.users ON DELETE CASCADE;
+            clothing_free_limit int CHECK >0; created_at.
+  Seeded  : hardcoded user 619b975b-ce2b-4e62-99dc-7bb0ddcb4c80 = 100.
+  RLS     : enabled with ZERO policies — "RLS with zero policies denies
+            everything" (comment 202610050001:24-26); anon/authenticated
+            fully revoked, SELECT granted to service_role only; read by the
+            SECURITY DEFINER reserve_clothing_ai_generation() only.
+
+2.12 auth.users (Supabase-managed, outside the repo)
+  Referenced ON DELETE CASCADE by: dressed_characters (0001:42),
+  wardrobe_items (0001:170), wardrobe_results (0001:217),
+  wardrobe_item_ai_assets (0010:32), ai_generation_usage (0001:258),
+  ai_generation_limit_overrides (202610050001:17). Whether `profiles`
+  cascades on auth delete is NOT visible in the repo [UNKNOWN].
+
+2.13 Objects NOT modelled as tables [C-CODE]
+  - NO table for AI generation jobs/history/status: only
+    ai_generation_usage counters, profiles.model_generation_status, and the
+    persisted results (wardrobe_results / dressed_characters /
+    wardrobe_item_ai_assets). Failed/abandoned jobs leave counters and a
+    status string, never a job row.
+  - NO table stores garment geometry/bbox metadata.
+
+================================================================================
+3. USER OWNERSHIP
+================================================================================
+3.1 Direct vs indirect ownership
+  DIRECTLY owned by the user (user_id -> auth.users ON DELETE CASCADE):
+    dressed_characters, wardrobe_items, wardrobe_results,
+    wardrobe_item_ai_assets (current), ai_generation_usage,
+    ai_generation_limit_overrides. [C-MIGRATION]
+  OWNED TRANSITIVELY (no direct auth FK; cascade through a parent):
+    wardrobe_item_ai_assets_legacy (via wardrobe_items and
+      dressed_characters — 0002:36-44)
+    saved_dressed_outfits          (via dressed_characters — 0012:31-33)
+  NOT user-owned (global reference): dressed_base_forms,
+    ai_generation_limits. [C-MIGRATION]
+  UNKNOWN: profiles (definition predates the repo).
+
+3.2 Chain 1 — USER -> PROFILE -> CHARACTER -> PERSONAL MODEL [C-CODE]
+  auth.uid -> profiles.user_id (client-created row, profile.astro:633-646)
+           -> dressed_characters.user_id (row created ONLY by the
+              publish_dressed_character RPC, which requires
+              profiles.gender = p_gender — 0001:94-100 / 0012:216-223)
+           -> personal model = dressed_characters.model_path, a FILE in
+              bucket `model-images` at `{userId}/personal-model-{uuid}.png`
+              (character-job.ts:119), mirrored to profiles.model_photo_path
+              by the same RPC (0012:238-244).
+  The character row belongs to the user directly; the model file's storage
+  owner is the uploader and its DB reference is guarded by CHECK
+  split_part(model_path,1)=user_id (0001:49-50).
+
+3.3 Chain 2 — USER -> WARDROBE ITEM -> CLOTHING ASSET [C-CODE][C-MIGRATION]
+  auth.uid -> wardrobe_items.user_id (row created by POST
+              /api/wardrobe/items, items/index.ts:441-460)
+           -> wardrobe_item_ai_assets (user_id, item_id) — written ONLY by
+              the service role inside runClothingJob
+              (clothing-job.ts:185-198, upsert on
+              (user_id,item_id,base_type))
+           -> asset file in `model-images` at
+              `{userId}/clothing/{characterId}/{uuid}.png`
+              (clothing-job.ts:170-171). The FOLDER is named after the
+              character primary at generation time, but the ROW is keyed by
+              base_type, not by character.
+  The asset row belongs to the user directly; it depends on the item
+  (FK cascade) but NOT on any character row.
+
+3.4 Chain 3 — CHARACTER -> SAVED OUTFIT [C-MIGRATION]
+  dressed_characters (user_id,id) -> saved_dressed_outfits
+  (user_id,character_id) ON DELETE CASCADE (0012:31-33): a saved outfit
+  belongs to the user AND is bound to one character; deleting that character
+  silently deletes the outfit row.
+  saved_dressed_outfits.item_ids reference wardrobe_items only by VALUE
+  (text[]); integrity is enforced solely by the item-delete trigger
+  (0012:166-185), which deletes the WHOLE outfit when any listed item dies.
+
+3.5 Summary — who owns what [C-CODE][C-MIGRATION]
+  Record / file                             | Owner      | Ties to
+  ------------------------------------------+------------+------------------
+  profiles row                              | user       | auth.uid
+  dressed_characters row                    | user       | auth.uid (FK)
+  personal-model file                       | user       | row.model_path
+  wardrobe_items row                        | user       | auth.uid (FK)
+  clothing-originals file (upload)          | user       | item.original_path
+  clothing-previews file (clean preview)    | user       | item.preview_path
+  wardrobe_item_ai_assets row               | user       | (user,item,base)
+  clothing/{characterId}/{uuid}.png file    | user       | asset.reference_path
+  saved_dressed_outfits row                 | user + character
+  wardrobe_results row + result file        | user (+character)
+  ai_generation_usage row                   | user       | auth.uid (FK)
+  ai_generation_limit_overrides row         | user       | auth.uid (FK)
+  system-reference/base-forms/*.png         | platform   | dressed_base_forms
+
+================================================================================
+4. ACCOUNT DELETION
+================================================================================
+4.1 The event: auth.users row is deleted
+  There is NO application path for this [C-CODE]; it can only happen via the
+  Supabase dashboard / Admin API. IF it happens, the DB consequences are:
+
+  Record                                   | Fate on auth delete | Source
+  -----------------------------------------+---------------------+---------
+  profiles row                             | UNKNOWN (not in repo)
+  dressed_characters                       | CASCADE delete      | 0001:42
+  wardrobe_items                           | CASCADE delete      | 0001:170
+  wardrobe_results                         | CASCADE delete      | 0001:217
+  wardrobe_item_ai_assets (current)        | CASCADE delete      | 0010:32
+  wardrobe_item_ai_assets_legacy           | cascade (transitive)| 0002:36-44
+  saved_dressed_outfits                    | cascade (transitive)| 0012:31-33
+  ai_generation_usage                      | CASCADE delete      | 0001:258
+  ai_generation_limit_overrides            | CASCADE delete      | 202610050001:17
+  dressed_base_forms / ai_generation_limits| untouched (global)
+  All STORAGE files under {userId}/...     | NOT TOUCHED         | [no code]
+  [CONFIRMED BY MIGRATION for rows; CONFIRMED BY CODE for storage]
+
+  => ACCOUNT DELETION LEAVES EVERY STORAGE FILE ORPHANED: source photos
+     (profile-images), personal models, clothing originals, previews,
+     AI-ready layers, try-on results and outfit results all survive in the
+     `model-images` / `profile-images` buckets with no owning row.
+     [CONFIRMED BY CODE — no storage.remove() is ever tied to auth deletion]
+
+4.2 Per-asset detail (what a cascade does NOT reach)
+  * Original clothing images (item.original_path), previews
+    (item.preview_path), legacy reference_path files: their DB rows vanish
+    with wardrobe_items, but the FILES persist. [C-MIGRATION + C-CODE]
+  * AI-ready reusable clothing assets: rows vanish via FK cascade; FILES
+    under {userId}/clothing/{characterId}/ persist. [same]
+  * Saved outfits: rows vanish transitively; they hold no files.
+    [C-MIGRATION]
+  * AI usage / overrides: rows vanish (quota history dies with the user).
+    [C-MIGRATION]
+  * wardrobe_results files under {userId}/wardrobe-results/ persist.
+    [C-CODE]
+
+4.3 The opposite event: only the application profile row is deleted
+  The app cannot do this; assume a dashboard/SQL delete of `profiles`.
+  [C-CODE]
+  What REMAINS [C-MIGRATION]:
+    - auth.users row (email still registered -> cannot re-signup)
+    - every dressed_characters row (primary flag untouched)
+    - every wardrobe_item, asset, result, saved outfit, usage row
+    - every storage file
+  What BREAKS or behaves oddly [C-CODE][LIKELY PROBLEM]:
+    - publish_dressed_character requires a matching profile row
+      (0001:94-100 / 0012:216-223) -> NEW character generation fails with
+      "The character model type does not match the locked profile type."
+    - set_primary_dressed_character joins profiles (0001:135-140) -> the
+      profile.model_photo_path update silently no-ops.
+    - delete_dressed_character updates profiles conditionally -> degrades
+      silently (guarded WHERE).
+    - The profile page RE-CREATES the row on next visit
+      (profile.astro:633-646), restoring name/gender from auth metadata —
+      but source_photo_path / model_photo_path / model_generation_status
+      return NULL while the old characters and files still exist
+      [LIKELY PROBLEM: profile and character state desynchronise].
+  Relationships preventing deletion: NONE reference `profiles` — nothing
+  cascades from it and nothing except the RPCs depends on its presence.
+
+4.4 Orphan inventory (both events combined) [CONFIRMED BY CODE]
+  Orphaned DATABASE rows: none reachable through the application's own
+  delete flows — every delete path goes through tables with FK cascades or
+  SECURITY DEFINER RPCs that clean dependants. [C-CODE] The only DB-side
+  orphan risk is rows whose parents are deleted by a process outside the
+  app (e.g. raw SQL) in a way that bypasses FKs — not demonstrated.
+  Orphaned STORAGE files (the real gap):
+    - ALL user files on account deletion (4.1/4.2)
+    - {userId}/clothing/{A}/... files kept on purpose when character A was
+      deleted while its base type stayed covered (characters/[id].ts:125-132)
+      are never revisited later: when the covering character B is finally
+      deleted, the cleanup query is scoped to B's folder only
+      (characters/[id].ts:109-114), so A's folder remains forever
+      [CONFIRMED BY CODE]
+    - a background function killed between storage upload and DB upsert
+      (clothing-job.ts:170-199) leaves an unlinked PNG
+      [POSSIBLE PROBLEM — cleanup exists only in catch/finally]
+    - items/index.ts deletes originals/previews/assets/results on item
+      delete (lines 85-131) — good; failures there return 500 but the DB row
+      is already gone, leaving files [POSSIBLE PROBLEM]
+  Records that remain unexpectedly:
+    - profiles survives every "user deleted their stuff" operation short of
+      an auth delete (section 1.7); model_generation_status persists with no
+      job history.
+  Relationships that prevent deletion (intentional guards):
+    - api/characters/[id].ts:70-72 refuses to delete the LAST character
+      (409); :83-88 refuses to delete the primary without a normalized
+      same-gender replacement.
+
+4.5 Character deletion detail [C-CODE + C-MIGRATION]
+  DELETE /api/characters/{id} -> rpc delete_dressed_character
+  (0010:103-193) + storage cleanup in characters/[id].ts:
+   - nulls wardrobe_items.reference_path that pointed at legacy asset paths
+   - deletes wardrobe_results for the character (FK also cascades)
+   - deletes wardrobe_item_ai_assets_legacy rows (FK also cascades)
+   - promotes a replacement primary + updates profiles.model_photo_path
+   - deletes the dressed_characters row
+  Storage removal (characters/[id].ts:134-139,202-218):
+   - character.model_path, legacy asset paths, result paths
+   - ACTIVE base-type asset files under {userId}/clothing/{characterId}/
+     ONLY when no other normalized character of the same gender remains
+     (baseTypeStillCovered, lines 125-132), after which the matching asset
+     ROWS are also deleted (lines 188-200).
+  => Deleting a character CAN delete reusable clothing assets — but only
+     when it is the LAST normalized character of that base type, i.e.
+     precisely when the app can no longer use them. [CONFIRMED BY CODE]
+     Files under ALREADY-deleted characters' folders are outside this
+     query's scope and survive (see 4.4). [CONFIRMED BY CODE]
+
+================================================================================
+5. CLOTHING ASSET ARCHITECTURE (CURRENT IMPLEMENTATION)
+================================================================================
+5.1 What identifies a wardrobe item [C-MIGRATION][C-CODE]
+  Composite PK (user_id, id), where `id` is application-generated text
+  (items/index.ts:441-460 creates the row); unique only within a user.
+  Storage identity: original_path / preview_path / legacy reference_path,
+  each CHECKed to start with the owner's uid.
+
+5.2 What identifies a clothing asset [C-MIGRATION 0010:31-44]
+  Composite PK (user_id, item_id, base_type) with generation_version > 0.
+  Exactly ONE row per (item, base type); regeneration UPSERTS over it
+  (clothing-job.ts:185-194). The image is a private storage file at
+  `{userId}/clothing/{characterIdWhenGenerated}/{uuid}.png`.
+
+5.3 Item <-> asset relationship [C-MIGRATION]
+  FK (user_id, item_id) -> wardrobe_items(user_id,id) ON DELETE CASCADE.
+  One item -> 0..2 current assets (one per base type), plus 0..n frozen
+  legacy rows in wardrobe_item_ai_assets_legacy (character-bound).
+
+5.4 How base_type is used [C-CODE]
+  * Generation: process-clothing.ts:281-291 requires baseType to equal the
+    primary character's gender; the asset row stores it.
+  * Listing: items/index.ts:238-311 returns aiReadyAssets keyed by
+    base_type; "AI READY" requires baseType == primary gender AND
+    generation_version == CURRENT_CLOTHING_ASSET_VERSION (3).
+  * Rendering: wardrobe.astro:209 / profile-outfits.ts:27 select
+    aiReadyAssets[baseType] only; save_dressed_outfit (0014:74-87) rejects
+    outfits whose items lack a current (v3) asset for the active base_type.
+
+5.5 Assets and characters [C-CODE]
+  CURRENT asset rows are NOT linked to any character. The only character
+  link is the folder inside reference_path
+  (`{userId}/clothing/{characterId}/`) — purely historical. Compatibility
+  is the app-level rule "asset base_type == primary character's gender",
+  not a FK. [CONFIRMED BY CODE]
+
+5.6 Can the same asset be reused? Is it actually shared? [C-CODE][C-MIGRATION]
+  - Across outfits and across characters OF THE SAME BASE TYPE: YES — one
+    row serves every composition; saving many outfits reuses the same
+    reference_path (outfits/index.ts:117 checks existence, does not copy).
+  - Across characters of DIFFERENT base types: NO — a second asset must be
+    generated per base_type (PK enforces one per base type).
+  - Across users: NO — user_id is in the PK, RLS restricts to
+    auth.uid() = user_id, and the path CHECK forbids pointing at another
+    user's folder. There is NO sharing mechanism at all.
+    [CONFIRMED BY CODE]
+  => "Reusable" in DRESSED means reusable within ONE user across
+     characters/outfits/regenerations — NOT a shared catalogue.
+
+5.7 Can deleting a character accidentally delete reusable clothing?
+  YES, in exactly one scoped case [C-CODE]:
+   - If the deleted character is the LAST normalized character of its base
+     type, characters/[id].ts:125-132 + 188-200 delete BOTH the asset rows
+     (by reference_path prefix) and the files. Without any such character
+     the fitting room cannot render them anyway, but the loss is permanent:
+     re-creating a character later finds no assets and must regenerate
+     (spending quota).
+   - If another normalized character of the same base type remains, rows and
+     files are kept (baseTypeStillCovered) — reuse preserved. [C-CODE]
+   - CAVEAT: cleanup only matches the JUST-deleted character's folder;
+     rows/files created under earlier, already-deleted characters are never
+     removed — a leak in the opposite direction. [CONFIRMED BY CODE]
+
+5.8 Can deleting a wardrobe item accidentally delete an asset used elsewhere?
+  The asset FK cascades from wardrobe_items, so deleting the item deletes
+  BOTH of its base-type asset rows; items/[id].ts:85-131 additionally
+  deletes their storage files plus related wardrobe_results.
+  Because assets are per-item (never shared BETWEEN items), no other item's
+  asset is affected. [CONFIRMED BY CODE][C-MIGRATION]
+  Collateral damage: any saved_dressed_outfits row containing the deleted
+  item is deleted WHOLE by the trigger (0012:166-185) — never edited.
+  [CONFIRMED BY MIGRATION]
+
+5.9 Two generations of asset tables coexist [C-MIGRATION]
+  wardrobe_item_ai_assets_legacy (character-bound, 0002) and
+  wardrobe_item_ai_assets (base-type, 0010). Every delete path must handle
+  both (items/[id].ts:55-92, characters/[id].ts:92-115) — and does. Reads
+  use only the current table (plus the legacy reference_path column on
+  wardrobe_items). [C-CODE]
+
+================================================================================
+6. PROFILE FLOW
+================================================================================
+  USER -> PROFILE -> CHARACTER -> PERSONAL MODEL
+
+  Step 1 — USER                      [signup.astro:149-158]
+    input : email, password, name, gender
+    table : auth.users (Supabase-managed)
+    id    : auth uid
+  Step 2 — PROFILE                   [profile.astro:633-646]
+    input : auth uid + user_metadata {name, gender}
+    output: profiles row (insert-if-missing, CLIENT-side)
+    table : profiles ; id = user_id (= auth uid)
+    storage: none yet
+    deletion: no app path; the row is re-created automatically if missing
+              [C-CODE]
+  Step 3 — SOURCE PHOTO (optional)   [api/profile/source-photo.ts:80-92]
+    table : profiles.source_photo_path
+    storage: `profile-images` bucket,
+             {userId}/source-photo-{uuid}.{ext} (line 80)
+    ownership: owner = uploader; the PREVIOUS file is removed after a
+               successful update (lines 61-97) and on error paths
+  Step 4 — CHARACTER GENERATION      [personal-model.ts / character-job.ts]
+    input : source photo + canonical base form
+    tables: profiles.model_generation_status
+            ('pending'|'processing'|'completed'|'failed',
+             personal-model.ts:156-160, character-job.ts:56-59);
+            dressed_characters inserted ONLY by RPC
+            publish_dressed_character (0012:187-247)
+    id    : new dressed_characters.id (uuid), is_primary = true
+    storage: `model-images`, {userId}/personal-model-{uuid}.png
+             (character-job.ts:119); the RPC verifies the file exists in
+             storage AND is user-owned before inserting (0012:207-215)
+    ownership: user (FK + path CHECK)
+    deletion: only via DELETE /api/characters/{id} ->
+              rpc delete_dressed_character (guards: >=1 character must
+              remain; the primary needs a normalized same-gender
+              replacement — characters/[id].ts:70-90)
+
+  Notes [C-CODE][C-MIGRATION]:
+   - profiles.model_photo_path mirrors the primary character's path
+     (0012:238-244); the dressed_characters row is the authoritative record.
+   - Gender/base type is locked on first set (0001 trigger), and the RPC
+     refuses characters contradicting it (0012:216-223).
+
+================================================================================
+7. CLOSET FLOW
+================================================================================
+  USER -> WARDROBE ITEM -> ORIGINAL IMAGE -> PREVIEW -> AI-READY ASSET
+
+  Step 1 — UPLOAD                    [POST /api/wardrobe/items,
+                                      items/index.ts:416-494]
+    input : image bytes + name + category (client-supplied id used on
+            upsert/update path at :441-460)
+    table : wardrobe_items (user_id, id, name, category,
+            original_path, timestamps)
+    storage: `model-images`,
+             {userId}/clothing-originals/{uuid}.{ext} (line 426)
+    moderation: moderateImage() before upload (line 416)
+    cleanup: storage file removed if the DB write fails (lines 461,476,483)
+  Step 2 — CLEAN PREVIEW              [items/index.ts:97-126]
+    table : wardrobe_items.preview_path
+    storage: {userId}/clothing-previews/{uuid}.png (line 97)
+    generated by editImage() 1024x1024 WITHOUT the base form (lines 71-73)
+    cleanup: file removed on DB failure (lines 110,126)
+  Step 3 — AI-READY GENERATION        [profile.astro:954-955 ->
+                                      wardrobe-ai.ts:109 -> POST
+                                      /api/ai/process-clothing]
+    gates : primary character exists, baseType == its gender, contract
+            'normalized-v1' (process-clothing.ts:281-291); cache-hit on
+            version 3 (344-356); quota reserve (503); background job
+    table : wardrobe_item_ai_assets UPSERT
+            (user_id, item_id, base_type, reference_path,
+             generation_version=3) — clothing-job.ts:185-198 (service role)
+    storage: {userId}/clothing/{characterId}/{uuid}.png
+             (clothing-job.ts:170-171); replaced legacy file removed
+             (200-213); unlinked file cleaned on failure (216-221)
+  Step 4 — IDENTIFIER PRESERVATION    [C-CODE]
+    The SAME wardrobe_items.id (client-generated text) flows through every
+    stage: it is the FK into the asset row and the value stored inside
+    saved_dressed_outfits.item_ids. The asset adds base_type as a second
+    dimension. Storage paths are all fresh uuids — they are referenced only
+    by columns on the owning row, never derived from the item id.
+    => IDs are stable; PATHS are opaque and re-issued on regeneration.
+
+  Who owns what [C-CODE][C-MIGRATION]:
+    user    -> wardrobe_items row, all files under their uid prefix
+    item    -> original_path, preview_path, and (via FK) its asset rows
+    asset   -> reference_path file + generation_version (base_type scoped)
+    character/base type: NOT an owner of anything in the closet; it only
+    GATES which base_type asset is generated/usable (5.4/5.5).
+
+================================================================================
+8. DRESSED (FITTING ROOM) FLOW
+================================================================================
+  USER -> CHARACTER -> AVAILABLE CLOTHING -> CLOTHING ASSET -> OUTFIT
+       -> SAVED OUTFIT
+
+8.1 What DRESSED reads from Supabase [C-CODE]
+  GET /api/wardrobe/items (items/index.ts:160-343):
+    - dressed_characters (primary row: id, gender, model_path,
+      geometry_contract_version)
+    - wardrobe_items (own rows), wardrobe_item_ai_assets (base-type rows),
+      wardrobe_results (legacy cleanup paths)
+    - storage signed URLs for every referenced path
+  wardrobe.astro:276-387 additionally reads `profiles` (gender,
+  source_photo_path, model_photo_path) and dressed_characters from the
+  browser; saved outfits come from GET /api/wardrobe/outfits (index.ts:34)
+  and are saved via rpc save_dressed_outfit (index.ts:138).
+
+8.2 Which IDs it uses [C-CODE]
+  - primary character: dressed_characters.id (uuid), gated on
+    geometry_contract_version = 'normalized-v1' (wardrobe.astro:302-309;
+    outfits/index.ts:108-112; items/index.ts:343-346)
+  - items: wardrobe_items.id (text)
+  - assets: (user_id, item_id, base_type), selected client-side with
+    baseType = primary character gender
+  - outfit: saved_dressed_outfits.id (uuid), unique per
+    (user, character, outfit_key)
+
+8.3 Are clothing references stable? [C-CODE][C-MIGRATION]
+  YES at row level: the asset PK never changes and regeneration upserts in
+  place. `reference_path` may change (new uuid file, old file deleted) but
+  every consumer re-reads the row on each load and receives a fresh signed
+  URL (items/index.ts:216-311).
+  Saved outfits store item_ids, NOT paths — a regenerated asset is picked
+  up automatically; a BUMPED generation version (CURRENT=3) hides items
+  until regenerated (render filter wardrobe.astro:211-214) while the saved
+  outfit row survives intact.
+
+8.4 Do saved outfits reference reusable clothing assets? [C-CODE]
+  Indirectly: saved_dressed_outfits.item_ids -> wardrobe_items.id ->
+  wardrobe_item_ai_assets[base_type] resolved at render time. They never
+  copy the asset. save_dressed_outfit REQUIRES every item to own a
+  version-3 asset for the active base_type (0014:74-87).
+
+8.5 Can deleting something break an existing saved outfit?
+  [C-MIGRATION][C-CODE]
+  - Delete the OUTFIT row: nothing else affected (no files).
+  - Delete a WARDROBE ITEM: the trigger removes EVERY saved outfit
+    containing it (0012:166-185) — whole-outfit deletion, silently.
+    [LIKELY PROBLEM from UX; integrity-preserving]
+  - Delete a CHARACTER: FK cascade silently deletes ALL saved outfits bound
+    to it (0012:31-33). [CONFIRMED BY MIGRATION]
+  - Regenerate/invalidate an asset: outfit survives; rendering filters the
+    item out until a current asset exists (8.3). [C-CODE]
+  - Delete the account: everything above cascades away except storage.
+
+================================================================================
+9. AI GENERATION
+================================================================================
+9.1 Character generation [C-CODE]
+  Entry: POST /api/ai/personal-model.ts
+    reserve: rpc reserve_ai_generation('character') (line 240) — increments
+      used_count immediately and locks (in_progress)
+    token  : readReservationToken via service role (line 249)
+    job    : Netlify background function -> runCharacterJob
+      (character-job.ts:65-183)
+    success: file uploaded -> rpc publish_dressed_character (inserts the
+      dressed_characters row, flips the previous primary, updates profiles)
+    failure: uploaded file removed (154-159),
+      profiles.model_generation_status='failed' (160),
+      finishGenerationServer(succeeded=false) CREDITS BACK used_count
+      (0016:29-41; generation-usage.ts:141-159)
+    job-launch failure: finishGenerationServer(...false) or
+      finishGeneration (personal-model.ts:267, 289)
+  Records: NO job row — only the character row (success), the status string
+  and the usage counter.
+
+9.2 Clothing generation [C-CODE]
+  Entry: POST /api/ai/process-clothing.ts
+    gates: primary character + contract + baseType (281-291); cache-hit on
+      version 3 (344-356); moderation (421);
+      rpc reserve_clothing_ai_generation() (503) — does NOT increment
+      used_count, only locks with a clock_timestamp token
+    job   : runClothingJob (clothing-job.ts:32-229)
+    success: asset file uploaded + wardrobe_item_ai_assets upserted
+      (170-198) -> finishClothingGeneration(succeeded=true) INCREMENTS
+      used_count (0011:26-37; generation-usage.ts:104-125)
+    failure: unlinked file removed (216-221); finalize(succeeded=false)
+      leaves used_count unchanged and releases the lock
+  NOTE: finalization is service-role only — 0011 revoked the user-scoped
+  finish_clothing_ai_generation, so clients cannot commit/rollback quota.
+
+9.3 Try-on generation (two routes, both SYNC, user-scoped finalizers)
+  - POST /api/ai/try-on (FASHN): reserve (try-on.ts:215), moderate,
+    generate, upload {userId}/try-on-{uuid}.{ext} (236-245), cleanup on
+    failure (247-266), finally finishGeneration(client,'tryon') (297).
+  - POST /api/ai/dress-model (server compose): reserve (285), reads usage
+    via get_ai_generation_usage (175), uploads
+    {userId}/wardrobe-results/{uuid}.png (308-309), inserts wardrobe_results
+    (331) with reuse-by-outfit_key (146-168), finally
+    finishGeneration(client,'tryon') (377).
+  Ownership: rows/files keyed by the user; wardrobe_results optionally
+  bound to (user, character) with cascade (0010:22-26).
+
+9.4 Generation records / status
+  Records = usage counters + result rows only; there is NO
+  ai_generations/job table. [CONFIRMED BY CODE]
+  Status: profiles.model_generation_status for characters
+  ('pending'|'processing'|'completed'|'failed'; personal-model.ts:156-160).
+  NOTHING equivalent exists for clothing or try-on. [C-CODE]
+
+9.5 Failed / cancelled / abandoned — orphan analysis [CONFIRMED BY CODE]
+  Character:
+   - normal failure paths delete the uploaded file
+     (character-job.ts:154-159) and mark status failed. If the function is
+     KILLED mid-run, the file can survive unlinked [POSSIBLE PROBLEM] and
+     the lock stays until the next reserve clears it after the 5-minute
+     window (0015:41-52) — but used_count (incremented at reserve) is NEVER
+     credited back because finalization never runs [LIKELY PROBLEM: an
+     abandoned character generation permanently burns quota out of a limit
+     of 1].
+  Clothing:
+   - reserve only LOCKS; a killed job never finalizes -> the lock expires
+     via the 5-minute rule on the next attempt; used_count untouched, so no
+     quota is lost — but a file uploaded before the kill (170 vs 185)
+     orphans [POSSIBLE PROBLEM].
+  Try-on:
+   - used_count increments at reserve; both sync routes finish through the
+     USER-scoped finish_ai_generation, which ONLY releases the lock — it
+     has no used_count logic at all (0001:343-358). => a FAILED try-on
+     permanently consumes quota, unlike the background character path
+     (0016 credits back). [CONFIRMED BY CODE — asymmetry]
+  Cancelled: no cancellation mechanism exists (only 5-minute stale-lock
+  recovery). [CONFIRMED BY CODE]
+
+================================================================================
+10. AI QUOTAS
+================================================================================
+10.1 Tables [C-MIGRATION]
+  ai_generation_limits — global free limits (0001:256-266); current values
+    character=1, clothing=3, tryon=1 (0015:6-7). SELECT for authenticated.
+  ai_generation_usage — per (user, type): used_count, in_progress,
+    started_at (reservation token), updated_at (0001:257-277). SELECT own
+    row; all writes via SECURITY DEFINER functions.
+  ai_generation_limit_overrides — per-user clothing override
+    (202610050001:16-33); ZERO RLS policies (deny-all), service_role
+    SELECT only, seeded with a hardcoded test user = 100.
+
+10.2 Reservation functions [C-MIGRATION]
+  reserve_ai_generation(type) — character/tryon (0015:8-70):
+    - ensures a usage row; locks `for update`
+    - rejects 'already_in_progress' inside 5 minutes, else clears stale lock
+    - rejects 'limit_reached' unless app_metadata.is_owner = true
+    - INCREMENTS used_count, sets in_progress + started_at
+  reserve_clothing_ai_generation() — (0015:72-146; override-aware
+  redefinition 202610050001:35-122):
+    - same locking / stale-window logic
+    - applies ai_generation_limit_overrides.clothing_free_limit when a row
+      exists (74-76), else the global limit
+    - rejects 'limit_reached' unless is_owner
+    - does NOT increment used_count; sets in_progress +
+      reservation_started_at = clock_timestamp()
+  Ownership: every function derives current_user_id := auth.uid() and
+  scopes all reads/writes to it. is_owner comes from the signed JWT
+  app_metadata (writeable only with the service role) — a normal user
+  cannot raise their own limit. [C-MIGRATION]
+
+10.3 Finalization functions [C-MIGRATION]
+  finish_ai_generation(type) — USER-callable (grant from 0001:377-382;
+  0016 did NOT revoke it): clears in_progress/started_at ONLY. No refund.
+  finish_ai_generation_server(user, type, token, succeeded) — service_role
+  only (0016:6-51): must match the exact reservation token; on failure
+  DECREMENTS used_count (greatest(used_count-1,0)).
+  finish_clothing_ai_generation_server(user, token, succeeded) —
+  service_role only (0011:6-43): INCREMENTS used_count only on success +
+  releases the lock.
+  The user-scoped finish_clothing_ai_generation was REVOKED from everyone
+  (0011:3-4).
+
+10.4 Two counting philosophies in one table [C-MIGRATION][C-CODE]
+  character/tryon : count-at-reserve, refund-on-failure (background path).
+  clothing        : count-at-success (never charged if the job dies).
+  The sync try-on routes lose the refund because they finish through the
+  user-scoped function (section 9.5). [CONFIRMED BY CODE]
+
+10.5 Failed generations [C-CODE][C-MIGRATION]
+  - background character: refunded (0016)
+  - background clothing: not charged unless an asset was persisted
+  - sync try-on: charged even on failure
+  - abandoned jobs: lock self-heals after 5 minutes; refund only occurs if
+    finalization actually ran.
+
+10.6 Overrides [C-MIGRATION 202610050001]
+  - Table + seeded row for one hardcoded uuid (line 31).
+  - Consulted ONLY by reserve_clothing_ai_generation; character/tryon
+    deliberately untouched (comment lines 7-8).
+  - Deliberately NOT using the is_owner mechanism (line 14).
+  - RLS: zero policies = deny-all; only SECURITY DEFINER code reads it.
+
+10.7 Match with intended DRESSED behaviour [assessment]
+  [DOCUMENTED INTENT] Wanted: a small free allowance per type, one
+  generation in flight at a time, no charge for failures, and a safe way
+  for a test account to exceed the limit.
+  [CONFIRMED BY CODE] Matches: in-progress lock; 5-minute stale recovery;
+  service-role-only clothing finalization; per-type limits; override table
+  users cannot write.
+  [CONFIRMED BY CODE] Does NOT match: failed sync try-ons are charged;
+  abandoned character jobs are charged; there is NO history table to see
+  what was charged or why; and the override migration hardcodes a user id
+  into a shipped migration (test data in production schema).
+  [LIKELY PROBLEM]
+
+================================================================================
+11. STORAGE
+================================================================================
+Only two buckets are referenced anywhere in src/ [C-CODE]:
+  `model-images`   (private) — all DRESSED imagery
+  `profile-images` (private) — source photos
+
+11.1 Path inventory [C-CODE]
+  Bucket / path                                   | What            | Written by
+  ------------------------------------------------+-----------------+------------------
+  profile-images/{uid}/source-photo-{uuid}.{ext}  | user's photo    | source-photo.ts:80
+  model-images/{uid}/personal-model-{uuid}.png    | character model | character-job.ts:119
+  model-images/{uid}/clothing-originals/{uuid}.*  | original upload | items/index.ts:426
+  model-images/{uid}/clothing-previews/{uuid}.png | clean preview   | items/index.ts:97
+  model-images/{uid}/clothing/{characterId}/      | AI-ready layer  | clothing-job.ts:170
+      {uuid}.png                                 | (reusable asset)|
+  model-images/{uid}/wardrobe-results/{uuid}.png  | dress-model out | dress-model.ts:308
+  model-images/{uid}/try-on-{uuid}.{ext}          | FASHN try-on    | try-on.ts:236
+  model-images/system-reference/base-forms/       | canonical master| platform (seeded)
+      woman.png | man.png                         |                 |
+
+11.2 Ownership & DB relationship [C-CODE][C-MIGRATION]
+  - Every user path starts with the owner's uid; DB CHECKs mirror this on
+    wardrobe_items.{reference,original,preview}_path, wardrobe_results
+    .result_path, dressed_characters.model_path (0001:49-50) and
+    wardrobe_item_ai_assets.reference_path (0010:43).
+  - publish_dressed_character additionally verifies the file EXISTS in
+    storage with storage.objects.owner_id = auth.uid() before inserting
+    (0012:207-215) — the only place storage ownership is checked against
+    the DB.
+  - Signed URLs are minted per request (items/index.ts:251-322); no public
+    reads. `clothing/{characterId}/` is character-named but its ROW is
+    base-type keyed (5.5). system-reference files are platform-owned.
+
+11.3 Automatic deletion? [C-CODE]
+  NO storage triggers/lifecycle rules exist in the repository, and Supabase
+  storage does not cascade from SQL. Deletion is purely
+  APPLICATION-INITIATED:
+   - item delete        -> items/[id].ts:120-131 (original, preview,
+                           legacy reference, BOTH asset files, results)
+   - character delete   -> characters/[id].ts:202-218 (model, legacy
+                           assets, results, conditionally active assets)
+   - source photo replace -> source-photo.ts:61-97 (old file)
+   - clothing regen     -> clothing-job.ts:200-213 (replaced file),
+                           216-221 (unlinked file on failure)
+   - try-on failure     -> try-on.ts:247-266 (partial file)
+   - ACCOUNT deletion   -> NOTHING (no code path exists)
+  => DB deletion NEVER removes storage by itself. [CONFIRMED BY CODE]
+
+11.4 Can storage files become orphaned? [CONFIRMED BY CODE]
+  YES, four documented ways:
+   A. Account deletion: every user file remains.
+   B. Character-folder leftovers: files kept under an earlier deleted
+      character's folder are never revisited by later cleanups (4.4).
+   C. Crash between upload and DB write (background clothing/character
+      jobs; item upload dying between items/index.ts:429 and 441-460).
+   D. storage.remove() failing after a successful DB delete (item delete
+      returns 500 with the row already gone — items/[id].ts:124-130).
+  Plus BENEVOLENT orphans kept on purpose for reuse (active assets whose
+  character is gone but whose base type is still covered).
+
+11.5 What should logically be deleted with a user/account [analysis]
+  Everything under `{uid}/` in BOTH buckets: source photo, personal models,
+  clothing originals, previews, AI-ready layers, try-on and result images.
+  NOT to be deleted with a user: `system-reference/base-forms/*` (shared
+  platform data registered in dressed_base_forms). User-owned prefixes are
+  `{uid}/`; shared/reference files live under `system-reference/` with no
+  uid. Nothing else in storage is shared today (5.6: assets are never
+  cross-user). [CONFIRMED BY CODE]
+
+================================================================================
+12. RLS AUDIT (EVERY RELEVANT POLICY)
+================================================================================
+Legend: U = authenticated user as themselves; S = service role; N = anon.
+"own" = (select auth.uid()) = user_id.
+
+12.1 dressed_characters [C-MIGRATION 0001:57-64]
+  SELECT : U, own rows only.
+  INSERT/UPDATE/DELETE : DENIED to U (revoke all; only SELECT granted) —
+    performed exclusively by SECURITY DEFINER RPCs (publish / set_primary /
+    delete_dressed_character).
+  Assessment: consistent with ownership; correctly write-protected.
+
+12.2 wardrobe_items [C-MIGRATION 0001:178-214]
+  SELECT/INSERT/UPDATE/DELETE : U own rows; insert/update additionally
+    require split_part(reference_path,1) = auth.uid().
+  Assessment: correct. The policy path-checks reference_path only;
+  original/preview are covered by DB CHECKs, not by the policy.
+
+12.3 wardrobe_results [C-MIGRATION 0001:226-255]
+  SELECT/INSERT/DELETE : U own rows (insert checks result_path prefix).
+  UPDATE : NO POLICY -> denied (no update need exists).
+  Assessment: fine; partially redundant with DB CHECKs but harmless.
+
+12.4 wardrobe_item_ai_assets (current) [C-MIGRATION 0010:46-62]
+  SELECT : U own rows.  DELETE : U own rows.
+  INSERT/UPDATE : DENIED to U (only service_role) — generation is
+    server-only by design.
+  Assessment: the client-held DELETE lets a user (or buggy client) drop an
+  asset row while its file remains — no storage cleanup on that path
+  [POSSIBLE PROBLEM: orphaned file]. The app itself never calls it
+  directly (deletes happen via FK cascade or the character endpoint).
+  [C-CODE]
+
+12.5 wardrobe_item_ai_assets_legacy [C-MIGRATION 0002:56-94]
+  Full CRUD for U on own rows (+ path checks on insert/update).
+  Assessment: REDUNDANT with 0010 — two policy sets for two generations of
+  one concept; the app never writes legacy rows anymore (reads only)
+  [C-CODE]. Kept for preserved data.
+
+12.6 saved_dressed_outfits [C-MIGRATION 0012:36-51]
+  SELECT/DELETE : U own rows. INSERT via SECURITY DEFINER
+  save_dressed_outfit (grants 0012:163-164). UPDATE: none (the RPC does
+  `on conflict do update` internally).
+  Assessment: correct and consistent with ownership.
+
+12.7 ai_generation_limits [C-MIGRATION 0001:288-289]
+  SELECT : U for all rows (using true). No U writes.
+  Assessment: correct global reference data.
+
+12.8 ai_generation_usage [C-MIGRATION 0001:290-291]
+  SELECT : U own rows. Writes only via SECURITY DEFINER reserve/finish.
+  Assessment: correct; counters cannot be client-written.
+
+12.9 ai_generation_limit_overrides [C-MIGRATION 202610050001:22-28]
+  RLS enabled with ZERO policies (deny-all); anon/authenticated fully
+  revoked; SELECT granted to service_role; read inside SECURITY DEFINER.
+  Assessment: exemplary deny-all for a sensitive table.
+
+12.10 profiles [UNKNOWN]
+  Not defined in this repository. Observed behaviour: U can SELECT, INSERT
+  (when missing) and UPDATE own rows (profile.astro:616-646, 673-676,
+  859-866). Must be verified in the live DB. [INFERENCE from C-CODE]
+
+12.11 storage.objects [C-MIGRATION partial]
+  IN REPO: one policy — "Authenticated users can read DRESSED system base
+  form files" (0010:91-101): SELECT for authenticated limited to the two
+  system-reference/base-forms paths in bucket model-images.
+  NOT IN REPO: the policies that allow users to upload/list/delete their
+  own files — yet every upload runs with a USER-scoped client
+  (items/index.ts:429, source-photo.ts:83, clothing-job.ts:172), so such
+  policies must exist in the live project [UNKNOWN — outside migrations].
+  [CONFIRMED BY CODE that they are relied upon]
+
+12.12 Cross-cutting findings
+  MISSING:
+   - No repo-visible storage policies for user folders (12.11).
+   - No profile/account deletion endpoint or policy anywhere.
+  TOO PERMISSIVE (candidates — nothing was changed):
+   - wardrobe_item_ai_assets DELETE for U (12.4): can orphan files.
+   - Legacy table full CRUD (12.5): write access to data the app never
+     writes anymore.
+   - If the live bucket already has a broad authenticated-SELECT policy,
+     the 0010 base-form policy is REDUNDANT [UNKNOWN].
+  TOO RESTRICTIVE: none found — the definer-RPC pattern (writes only via
+  functions) is applied consistently wherever direct writes are denied.
+  INCONSISTENT WITH OWNERSHIP: none — every policy is scoped by auth.uid();
+  the only "shared" objects (base forms, limits) are global by design.
+  INCONSISTENT WITH REUSABLE CLOTHING ASSETS:
+   - Reusable assets are strictly user-private; RLS matches the CURRENT
+     design (5.6). If cross-user reuse were ever intended, NO policy
+     supports it today. [CONFIRMED BY CODE]
+   - The asset's storage folder is character-named while its row is
+     base-type keyed; RLS only sees user_id, which is sufficient because
+     all access is same-user.
+
+================================================================================
+13. MIGRATION HISTORY
+================================================================================
+Files actually present in supabase/migrations/ (12):
+  202610040001_dressed_ai_wardrobe.sql
+  202610040002_character_bound_clothing_assets.sql
+  202610040005_clothing_previews_and_asset_versions.sql
+  202610040008_clothing_ai_generation_commit.sql
+  202610040010_base_type_clothing_assets.sql
+  202610040011_secure_clothing_generation_finalization.sql
+  202610040012_normalized_character_geometry_and_saved_outfits.sql
+  202610040013_add_socks_category.sql
+  202610040014_fix_save_dressed_outfit_ambiguity.sql
+  202610040015_ai_quota_limits_and_owner_exemption.sql
+  202610040016_background_ai_generation_finalization.sql
+  202610050001_clothing_quota_override_test_user.sql
+
+  MISSING FROM THE REPO although requested for this audit:
+  202610040003 (fix wardrobe item RLS), 202610040004 (reusable character
+  outfit results), 202610040006 (create primary dressed character),
+  202610040007 (check character clothing assets), 202610040009.
+  The numbering gaps exist in the repository — either never committed or
+  run only against the live project. [CONFIRMED BY MIGRATION (absence)]
+  [UNKNOWN (live DB)]. Note: set_primary_dressed_character and
+  publish_dressed_character ARE created by 0001 here, so a "0006 create
+  primary character" file would be at least partially superseded.
+
+13.1 202610040001_dressed_ai_wardrobe (15 KB — the foundation)
+  Introduced: profiles.gender + check + gender-lock trigger;
+  dressed_characters (+unique one-primary index, path CHECK, RLS SELECT);
+  RPC publish_dressed_character; RPC set_primary_dressed_character;
+  wardrobe_items (+4 RLS policies, path CHECK); wardrobe_results (+RLS);
+  ai_generation_limits (+seed 3/3/3); ai_generation_usage (+RLS);
+  reserve_ai_generation / finish_ai_generation / get_ai_generation_usage;
+  revoke-all-then-grant table/function grants.
+  Storage: none directly (paths enforced via DB CHECKs).
+  Later changes: 0012 REPLACES publish_dressed_character (adds
+  geometry_contract_version stamping) and adds saved_dressed_outfits;
+  0015 redefines reserve_ai_generation (limits 1/3/1 + owner exemption);
+  0016 adds the server finalizer alongside the untouched user finish.
+
+13.2 202610040002_character_bound_clothing_assets
+  Introduced: wardrobe_items.original_path (+CHECK, reference_path made
+  nullable); wardrobe_item_ai_assets keyed by CHARACTER (PK user,item,
+  character; FKs to items and characters ON DELETE CASCADE; RLS full CRUD);
+  backfill copying legacy reference_paths onto the primary character's
+  asset rows (lines 96-112).
+  Later changed by: 0005 (adds generation_version) then 0010 (RENAMES the
+  table to ..._legacy and rebuilds the concept per base_type).
+
+13.3 202610040005_clothing_previews_and_asset_versions
+  Introduced: wardrobe_items.preview_path (+CHECK); asset
+  generation_version smallint (>0), comment: "NULL marks legacy assets".
+  Later: 0010's new table has generation_version integer NOT NULL; the app
+  requires = 3 (CURRENT_CLOTHING_ASSET_VERSION).
+
+13.4 202610040008_clothing_ai_generation_commit
+  Introduced: reserve_clothing_ai_generation() (count-at-success model,
+  5-minute stale window, reservation token) and user-scoped
+  finish_clothing_ai_generation(token, succeeded).
+  Later: 0011 REVOKES the user finish and adds the service-role
+  finish_clothing_ai_generation_server; 0015 redefines reserve (owner
+  exemption); 202610050001 redefines reserve again (override table).
+
+13.5 202610040010_base_type_clothing_assets (the pivotal migration)
+  Introduced: RENAME of the legacy asset table; wardrobe_results
+  .character_id + outfit_key + FK cascade; NEW wardrobe_item_ai_assets
+  (base_type, PK user,item,base_type, FK to items cascade, RLS SELECT+DELETE
+  for users, full CRUD service_role); dressed_base_forms (+seed, RLS
+  SELECT); storage.objects SELECT policy for the two base-form files;
+  RPC delete_dressed_character (legacy cleanup + primary promotion +
+  profiles update).
+  Effect: character-bound assets became read-only legacy data; reusability
+  is now per (item, base type).
+
+13.6 202610040011_secure_clothing_generation_finalization
+  Revoked user-scoped finish_clothing_ai_generation from everyone; added
+  finish_clothing_ai_generation_server (auth.role()='service_role' check +
+  token match + count-on-success).
+  Effect: clothing quota can only be committed by trusted server code.
+
+13.7 202610040012_normalized_character_geometry_and_saved_outfits
+  Introduced: dressed_characters.geometry_contract_version (backfill
+  'legacy', default 'normalized-v1', CHECK); saved_dressed_outfits (+RLS
+  SELECT/DELETE; service insert); RPC save_dressed_outfit (requires primary
+  + normalized character, all items owned, all items with a current
+  base-type asset); trigger remove_saved_outfits_for_deleted_item on
+  wardrobe_items; REPLACED publish_dressed_character (stamps
+  'normalized-v1').
+  Later: 0014 fixes a variable/column ambiguity inside save_dressed_outfit
+  only.
+
+13.8 202610040013_add_socks_category
+  Rebuilt wardrobe_items_category_check to include 'socks'.
+  Non-destructive widening; no RLS/function/storage changes.
+
+13.9 202610040014_fix_save_dressed_outfit_ambiguity
+  Re-created save_dressed_outfit with `#variable_conflict use_column`
+  (fixes SQLSTATE 42702). Same signature and grants; explicitly "No table,
+  data, policy or RLS changes" (comment lines 1-4).
+
+13.10 202610040015_ai_quota_limits_and_owner_exemption
+  Set limits: character=1, clothing=3, tryon=1; redefined
+  reserve_ai_generation and reserve_clothing_ai_generation to skip
+  'limit_reached' when auth.jwt().app_metadata.is_owner = true (service-
+  role-writable only). Locks, tokens and return shapes unchanged.
+
+13.11 202610040016_background_ai_generation_finalization
+  Added finish_ai_generation_server(user, type, token, succeeded) —
+  service_role only; refunds used_count on failure for character/tryon.
+  Did NOT revoke the user-scoped finish_ai_generation — that asymmetry is
+  why sync try-on failures stay charged (9.5).
+
+13.12 202610050001_clothing_quota_override_test_user (UNTRACKED file)
+  Added ai_generation_limit_overrides (deny-all RLS) and redefined
+  reserve_clothing_ai_generation to consult it; seeds ONE hardcoded user
+  with limit 100. Deliberately avoids the is_owner mechanism.
+  Concerns: test data inside a shipped migration [LIKELY PROBLEM]; this
+  function redefinition supersedes 0015's version and must be re-applied
+  if 0015 is ever replayed.
+
+13.13 Code vs migrations comparison [C-CODE]
+  Aligned: every RPC the code calls exists with matching names/signatures;
+  asset versioning (3) matches the column; base_type checks match
+  ClothingBaseType; contract 'normalized-v1' matches
+  DRESSED_GEOMETRY_CONTRACT_VERSION; grants match how client/server call
+  each function (user-key client for reads/reserves; service role for asset
+  writes and finalization).
+  Drift / notes:
+   - The code still calls finish_ai_generation (user-scoped) for sync
+     try-on — works, but has no refund logic (9.5).
+   - Defensive column-missing handlers (isMissingPreviewPathColumn;
+     isMissingColumn process-clothing.ts:86-91) suggest some deployments
+     may predate 0005/0010 — tolerated, not drift.
+   - Migrations 0003/0004/0006/0007/0009 named in the audit request do not
+     exist in this repository (section 13 header).
+   - set_primary_dressed_character is called only from the character
+     deletion fallback (characters/[id].ts:147-168) — consistent with its
+     grant surface.
+
+================================================================================
+14. COMPLETE END-TO-END DATA FLOW
+================================================================================
+(user creation -> profile -> character -> personal model -> wardrobe item ->
+ clothing asset -> closet -> dressed -> saved outfit -> account deletion)
+
+1. USER CREATION
+   in/out: credentials -> auth user + session | table: auth.users
+   ID: auth uid | owner: Supabase Auth | storage: —
+   app: signup.astro:149-158 | deletion: none in app [C-CODE]
+2. PROFILE
+   in: uid + user_metadata | out: profiles row | table: profiles
+   ID: user_id (= uid) | owner: user | storage: —
+   app: profile.astro:633-646 (insert-if-missing)
+   deletion: none; row is auto-recreated if deleted [C-CODE]
+3. CHARACTER + PERSONAL MODEL
+   in: source photo + base form + quota | out: character row + model PNG
+   table: dressed_characters (+ profiles.model_photo_path /
+   model_generation_status) | ID: character uuid | owner: user (FK cascade)
+   storage: model-images/{uid}/personal-model-{uuid}.png
+   app: personal-model.ts -> character-job.ts -> publish_dressed_character
+   deletion: DELETE /api/characters/{id} -> rpc delete_dressed_character;
+   cascades saved_dressed_outfits + wardrobe_results + legacy assets;
+   storage cleanup partial (4.5); guards: keep >=1 character, normalized
+   replacement for primary [C-CODE]
+4. WARDROBE ITEM
+   in: garment image + name + category | out: item row + original PNG
+   table: wardrobe_items | ID: (uid, text id) | owner: user
+   storage: model-images/{uid}/clothing-originals/{uuid}.*
+   app: POST /api/wardrobe/items (items/index.ts:416-494)
+   deletion: DELETE /api/wardrobe/items/{id} — cascades BOTH asset rows,
+   removes original/preview/asset/result files, deletes related
+   wardrobe_results, trigger-deletes saved outfits containing the item
+   [C-CODE][C-MIGRATION]
+5. PREVIEW
+   in: original file | out: preview PNG + preview_path column
+   table: wardrobe_items.preview_path | owner: user (via item)
+   storage: {uid}/clothing-previews/{uuid}.png
+   app: items/index.ts:97-126 | deletion: with the item
+6. CLOTHING ASSET (AI-ready / reusable)
+   in: item + baseType + quota reservation | out: asset row + transparent PNG
+   table: wardrobe_item_ai_assets | ID: (uid, item_id, base_type)
+   owner: user (FK to item) | storage: {uid}/clothing/{characterId}/{uuid}.png
+   app: process-clothing.ts -> runClothingJob (service role upsert)
+   deletion: cascades with the item (file removed by the item endpoint);
+   file+row removed with the LAST character of that base type (4.5)
+   [C-CODE][C-MIGRATION]
+7. CLOSET (read side)
+   in: session | out: items + aiReadyAssets + signed URLs
+   app: closet.astro + GET /api/wardrobe/items | deletion: —
+8. DRESSED (fitting room)
+   in: session + selection | out: browser overlay
+   reads: profiles, dressed_characters, wardrobe_items,
+   wardrobe_item_ai_assets, saved_dressed_outfits
+   app: wardrobe.astro + GET /api/wardrobe/items | deletion: —
+9. SAVED OUTFIT
+   in: name + item_ids | out: saved_dressed_outfits row
+   ID: (uid, outfit uuid), unique per (character, outfit_key)
+   owner: user + character | storage: none
+   app: POST /api/wardrobe/outfits -> rpc save_dressed_outfit
+   deletion: DELETE /api/wardrobe/outfits/{id} (own row only); silent
+   cascade on character delete; whole-outfit trigger on item delete
+10. ACCOUNT DELETION
+   in: auth.users delete (external only) | out: all user rows cascaded;
+   ALL storage files orphaned; profiles fate UNKNOWN
+   app: DOES NOT EXIST [C-CODE] — see sections 1.7, 4.1
+
+================================================================================
+15. CURRENT VS INTENDED ARCHITECTURE
+================================================================================
+Intended:
+  USER
+  ├── PROFILE └── CHARACTER └── PERSONAL MODEL
+  ├── CLOSET └── WARDROBE ITEM └── REUSABLE CLOTHING ASSET
+  └── DRESSED └── SAVED OUTFITS
+  CHARACTER -> BASE TYPE -> COMPATIBLE CLOTHING ASSETS
+  AI -> CHARACTER GENERATION | CLOTHING GENERATION | TRY-ON | QUOTA/USAGE
+
+Meaningful differences found (current vs intended):
+
+ D1. REUSABLE ASSET DEPENDS ON ITEM, NOT ON CHARACTER — ALIGNED.
+     Asset PK (user, item, base_type); characters only gate by gender.
+     Matches "CHARACTER -> BASE TYPE -> COMPATIBLE ASSETS". [C-CODE]
+ D2. NO CROSS-USER SHARING — "reusable" is implemented only WITHIN a user
+     (5.6). If a shared catalogue was meant, it does not exist. [C-CODE]
+ D3. PERSONAL MODEL FILE IS DOUBLE-REFERENCED — character.model_path is
+     authoritative, but profiles.model_photo_path duplicates it and is
+     maintained by three different RPCs; deleting the profile breaks the
+     mirror (4.3). The intended tree is one-directional. [C-CODE]
+ D4. SAVED OUTFITS ARE CHARACTER-BOUND — the intended tree hangs them off
+     DRESSED under USER; current schema hangs them off the CHARACTER with
+     cascade (2.7), so deleting a character silently destroys outfits.
+     [C-MIGRATION]
+ D5. ASSET FILES ARE CHARACTER-NAMED — storage paths embed a characterId
+     although rows are base-type keyed (5.5). Works, but couples storage
+     layout to a deletable entity and creates orphans (4.4, 11.4). [C-CODE]
+ D6. NO AI GENERATION ENTITY — the intended AI section reads like
+     first-class generation records; current has only counters + results,
+     so history/retry/audit are impossible (2.13). [C-CODE]
+ D7. QUOTA SEMANTICS ARE INCONSISTENT across the three generation types
+     (10.4/10.5); intended behaviour is presumably uniform. [C-CODE]
+ D8. ACCOUNT LIFECYCLE MISSING ENTIRELY — no deletion path, no profile
+     delete, storage never follows the DB (sections 1, 4, 11). [C-CODE]
+ D9. TWO ASSET GENERATIONS COEXIST (legacy + current) — a migration
+     artefact invisible in the intended design. [C-MIGRATION]
+ D10. TRY-ON EXISTS TWICE (dress-model + fashn try-on), neither reachable
+     from the UI (only /api/ai/{personal-model,process-clothing,usage} are
+     called by client code) — the intended AI section lists TRY-ON as
+     active; current wiring is ambiguous. [C-CODE][UNKNOWN]
+
+================================================================================
+16. CLASSIFICATION OF EVERY FINDING
+================================================================================
+[CONFIRMED BY CODE]
+ F01 No account/profile deletion exists anywhere in the app; signup fails
+     with user_already_exists because auth.users survives profile deletion
+     (1.7).
+ F02 The profile row is created client-side on first profile load and
+     self-heals after deletion (profile.astro:633-646).
+ F03 Storage files are removed ONLY by explicit application calls; no
+     account-deletion routine exists (11.3, 4.1).
+ F04 Character cleanup of reusable asset files/rows is scoped to the
+     deleted character's folder; files under earlier deleted characters
+     are never revisited (4.4/4.5).
+ F05 Sync try-on routes finish via the user-scoped function with no
+     refund => failed try-on consumes quota (9.5, 10.4).
+ F06 Abandoned background character jobs leave used_count charged and a
+     stale lock until 5-minute recovery (9.5).
+ F07 Reusable assets are user-private; no cross-user sharing exists
+     (5.6, 12.12).
+ F08 wardrobe_item_ai_assets DELETE is granted to authenticated users,
+     which can orphan files if ever used (12.4).
+ F09 dress-model and try-on endpoints have no client callers (section 3).
+ F10 Item upload can leave a storage file if the process dies between
+     upload and DB write (11.4C).
+ F11 The app tolerates missing DB columns defensively (13.13).
+ F12 outfits/items/characters endpoints scope every query to auth.uid() —
+     ownership consistently enforced.
+
+[CONFIRMED BY MIGRATION]
+ F13 All user tables except `profiles` cascade from auth.users; saved
+     outfits and legacy assets cascade transitively (4.1, 2.7, 2.6).
+ F14 Deleting a wardrobe item deletes EVERY saved outfit containing it
+     (0012 trigger) — whole outfit, silently (5.8, 8.5).
+ F15 Deleting a character cascades its saved outfits (0012 FK) (8.5).
+ F16 Clothing quota is committed only by service-role finalizers since
+     0011 (10.3).
+ F17 Limits are character 1 / clothing 3 / tryon 1 with a service-role-
+     only owner exemption (0015) (10.1, 10.2).
+ F18 ai_generation_limit_overrides is deny-all with a hardcoded seeded
+     user (202610050001) (2.11, 13.12).
+ F19 Migrations 0003/0004/0006/0007/0009 requested by the audit are absent
+     from the repository (13 header).
+ F20 Gender is immutable after first set (0001 trigger) (1.5).
+
+[CONFIRMED BY DATABASE]
+  (none — no live database was contacted in this audit; every DDL-level
+   claim above rests on the migration files themselves.)
+
+[CONFIRMED BY STORAGE]
+ F21 Exactly two buckets are used (model-images, profile-images) with a
+     uid-prefixed path scheme plus system-reference/ for shared masters
+     (11.1).
+ F22 The only storage policy present in the repo is the base-form SELECT
+     policy (0010:91-101); user-folder policies are not in the repository
+     (12.11).
+
+[DOCUMENTED INTENT]
+ F23 "Additive profile, wardrobe-reference, result and AI-quota
+     structures" (0001 header comment).
+ F24 Character-bound assets were meant to remain "reusable after
+     migration" (0002 header), later generalised to base-type reuse
+     (0010 header: "reusable base-type assets").
+ F25 Override table deliberately deny-all; "is_owner is deliberately NOT
+     used for this" (202610050001 comments).
+ F26 DRESSED Best Fit strategy: original = design authority, master =
+     geometry authority, browser = placement authority
+     (analysis/BestFitAnalyse.md §13).
+
+[LIKELY PROBLEM]
+ F27 "User already exists" after profile deletion — structurally
+     guaranteed by F01; observed by the user (1.7).
+ F28 Profile/character desynchronisation after a manual profile deletion
+     (4.3).
+ F29 Abandoned background character generation permanently burns a quota
+     unit (of a limit of 1) (9.5).
+ F30 Failed sync try-ons permanently burn a quota unit (9.5).
+ F31 Test-account UUID seeded inside a shipped migration (13.12).
+ F32 Deleting an item silently destroys outfits that reference it —
+     correct integrity, poor product behaviour (8.5).
+
+[POSSIBLE PROBLEM]
+ F33 Unconfirmed pending auth.users rows blocking re-signup (1.7).
+ F34 Orphaned files when a background function is killed mid-upload
+     (11.4C).
+ F35 Orphaned files when storage.remove() fails after a row delete
+     (11.4D).
+ F36 Storage policies for user folders may be missing or over-broad in the
+     live project — invisible from the repo (12.11).
+
+[UNKNOWN]
+ F37 profiles table definition, FK/ON DELETE and RLS (predates repo).
+ F38 Whether `profiles` cascades on auth.users delete.
+ F39 Contents of missing migrations 0003/0004/0006/0007/0009 in the live
+     project.
+ F40 Whether bucket definitions/lifecycle rules exist outside the repo.
+ F41 Product intent for dress-model/try-on routes (dead code or planned).
+
+================================================================================
+17. TARGET DATABASE ARCHITECTURE
+================================================================================
+Principle: smallest safe changes; preserve stable IDs; keep user-private
+data separate from shared/reusable data; make deletion deterministic.
+
+17.1 Authentication
+  - Keep Supabase Auth as the only identity source; keep auth.uid() as the
+    single user id used by every table and storage prefix. [no change]
+  - ADD an explicit account-deletion path (server endpoint using the
+    service role) that: deletes the auth.users row (cascades rows), then
+    removes `{uid}/` prefixes in both buckets, then confirms zero orphans.
+    This alone fixes F27: deleting an account releases the email.
+  - OPTIONAL: a database trigger on auth.users INSERT that creates the
+    profiles row (moving profile creation server-side), making the
+    profile's existence independent of client code — smallest variant of
+    the current insert-if-missing behaviour. [F02/F28]
+17.2 Profiles
+  - Bring the CREATE TABLE + RLS of `profiles` into version control (they
+    exist only in the live DB today — F37). Keep own-row SELECT/INSERT/
+    UPDATE, no client DELETE.
+  - Keep gender lock; document that profiles is a projection of auth
+    metadata + pointers (model_photo_path stays a mirror of the primary
+    character; the RPCs already maintain it).
+17.3 Characters
+  - Keep dressed_characters exactly as-is (PK, cascade, one-primary index,
+    contract version, definer RPCs) — it is the best-shaped table in the
+    schema.
+  - Extend delete_dressed_character's storage cleanup to sweep ALL
+    `{uid}/clothing/%` folders for base types that lose their last
+    normalized character (fixes F04) instead of only the current
+    character's folder.
+17.4 Wardrobe items
+  - Unchanged (PK, cascades, path CHECKs, RLS).
+  - Keep the saved-outfit trigger, but change its behaviour to REMOVE the
+    dead item_id from item_ids and delete the outfit ONLY when fewer than 1
+    item remains (small trigger change; fixes F32 without losing outfits).
+17.5 Reusable clothing assets (KEY DECISION)
+  - Keep PK (user, item, base_type) and service-role-only writes.
+  - DROP the client DELETE grant (F08): deletion should happen only via
+    item cascade or an explicit server endpoint that also removes the file.
+  - Rename the storage folder away from characterId for NEW assets, e.g.
+    `{uid}/clothing-assets/{item_id}-{base_type}-{uuid}.png`, so storage
+    no longer depends on a deletable entity (D5). Old paths keep working —
+    reference_path is opaque (8.3).
+  - Keep base_type as the compatibility key; characters continue to gate
+    by gender. This preserves the intended
+    CHARACTER -> BASE TYPE -> COMPATIBLE ASSETS relation without FKs.
+17.6 Saved outfits
+  - Keep (user_id, id) + character FK, or (smaller change) make character
+    ON DELETE SET NULL and drop the NOT NULL so outfits survive character
+    deletion — only if product wants that; otherwise keep cascade and
+    document it. [choose one; recommend documenting first]
+  - Add a generated/derived column for base_type already present — keep.
+17.7 AI generations (optional, later)
+  - Optional audit table ai_generation_events (id, user_id, type, status,
+    started_at, finished_at, error) written ONLY by server code — solves
+    F29/F30 debugging without touching quota logic.
+17.8 Quotas
+  - Keep tables; unify semantics: either count-at-reserve + refund (all
+    types) or count-at-success (all types). Smallest fix: make the sync
+    try-on routes call the SERVER finalizer (finish_ai_generation_server)
+    so failures refund (fixes F30) — one call-site change per route.
+  - Move the seeded override row out of the migration into an ops script
+    (F31) in a later migration that only deletes/reseeds deliberately.
+17.9 Storage
+  - Keep the two buckets and uid prefixes (they already encode ownership).
+  - Add a documented deletion order: rows first (within a transaction),
+    storage second, with idempotent retries (fixes F34/F35 patterns).
+17.10 RLS
+  - Keep the definer-RPC pattern; it is the right model.
+  - Revise: asset DELETE (17.5); consider revoking legacy-table INSERT/
+    UPDATE (read-only preservation, 12.5).
+  - Bring profiles + storage policies under migration control (17.1/17.9).
+17.11 Account deletion (target)
+  - See section 18 (dedicated target).
+
+================================================================================
+18. ACCOUNT DELETION TARGET
+================================================================================
+Classification first — two clearly different classes:
+
+  USER-OWNED DATA (must disappear with the account):
+    profiles row; dressed_characters rows + personal-model PNGs;
+    wardrobe_items rows + clothing-originals + clothing-previews;
+    wardrobe_item_ai_assets rows + their PNGs (unless see REUSABLE);
+    wardrobe_item_ai_assets_legacy rows; saved_dressed_outfits rows;
+    wardrobe_results rows + result PNGs; try-on PNGs;
+    ai_generation_usage rows; ai_generation_limit_overrides row;
+    the source photo; EVERY storage object under `{uid}/` in both buckets.
+
+  REUSABLE / SHARED DATA (must NOT be destroyed by anything except the
+  account owner's own deletion of their only copy):
+    - Within the current architecture, the "reusable clothing asset" is
+      USER-SCOPED (5.6): it is only "shared" between the user's own
+      characters/outfits. => on ACCOUNT deletion it MUST be deleted with
+      the account (it is private data), and that does not violate reuse.
+    - Platform-shared data: dressed_base_forms rows and the two
+      system-reference/base-forms/*.png files — NEVER deleted with a user.
+    - If cross-user sharing is added later (a global catalogue), those
+      rows/files must move OUT of `{uid}/` prefixes and out of per-user FKs
+      BEFORE any deletion logic is written (17.5).
+
+Desired behaviour per event:
+
+ E1. USER DELETES ACCOUNT (new endpoint, service role):
+     1) delete auth.users row -> all DB rows cascade (4.1 shows they will)
+        + profiles row (verify/force its cascade — F38)
+     2) list + remove `{uid}/` in model-images and profile-images
+     3) verify zero remaining storage objects with that prefix
+     Result: email released => re-signup works => fixes F27.
+     Order matters: DB first (authoritative), storage second (idempotent
+     retry), verification last.
+
+ E2. CHARACTER IS DELETED:
+     - dressed_characters row gone (existing RPC)
+     - saved_dressed_outfits bound to it: gone (current FK) — DOCUMENT
+       this, or switch to SET NULL if the product wants outfits to survive
+       (17.6)
+     - wardrobe_results bound to it: gone (FK)
+     - legacy character-bound assets: gone (FK + RPC cleanup)
+     - REUSABLE base-type assets: KEPT if any other normalized character
+       of that base type remains (current behaviour is correct);
+       additionally delete rows+files of ALL folders for a base type when
+       its LAST character goes (fixes F04) — and only then.
+     - personal model PNG: removed (current behaviour)
+     - items, originals, previews: untouched.
+
+ E3. WARDROBE ITEM IS DELETED:
+     - item row + BOTH base-type asset rows + their files (correct — assets
+       are per-item, nothing else references them)
+     - related wardrobe_results rows/files (current behaviour)
+     - saved outfits: STOP deleting whole outfits; instead strip the
+       item_id and delete the outfit only if it becomes empty (17.4/F32)
+
+ E4. SAVED OUTFIT IS DELETED:
+     - outfit row only; no files; no effect on items or assets (current
+       behaviour is already correct)
+
+ Hard rule (applies to E2/E3/E4): NEVER delete a storage object unless no
+ remaining wardrobe_item_ai_assets row references its path — make the row
+ the source of truth and derive deletions from a reverse lookup of
+ reference_path (this single rule eliminates F04 and F35 classes).
+
+================================================================================
+19. RLS TARGET
+================================================================================
+Guarantees the model must provide:
+
+ 1. A user can only ever SELECT/INSERT/UPDATE/DELETE rows where
+    user_id = auth.uid() — already true for every table in the repo
+    (12.1-12.9); must be made true for `profiles` by bringing its policies
+    under version control (17.2).
+ 2. Users can never write quota, override, or cross-user tables — already
+    true (12.7-12.9); keep zero policies on
+    ai_generation_limit_overrides.
+ 3. Asset rows are written only by trusted server code — keep
+    service_role-only INSERT/UPDATE; REMOVE the client DELETE (17.5) so a
+    client cannot delete a row whose file it will not remove.
+ 4. All privileged mutations flow through SECURITY DEFINER RPCs that
+    re-derive auth.uid() internally (publish/set_primary/delete character,
+    save outfit, reserve/finalize quota) — keep and prefer this pattern
+    over new table grants.
+ 5. Storage mirrors RLS: authenticated users may read/list/upload/delete
+    ONLY objects under `{uid}/`, plus READ-ONLY access to the two
+    system-reference base-form files (0010 policy). These bucket policies
+    must be captured as SQL in a future migration (F36) so they are
+    reviewable and reproducible.
+ 6. Reusable assets and future shared data:
+    - today: reusable assets are private -> own-row SELECT is correct and
+      sufficient; NO cross-user SELECT should be added while assets live
+      under `{uid}/`.
+    - if a shared catalogue is ever introduced: put shared rows in a table
+      WITHOUT user_id (or with nullable owner) and grant SELECT to
+      authenticated with using (true), while INSERT/UPDATE/DELETE stay
+      service-role-only; shared FILES must live under a non-uid prefix
+      (e.g. shared-assets/) with an authenticated SELECT-only policy.
+    - rule of thumb: uid prefix in storage <=> user_id in table; anything
+      shared must have NEITHER.
+ 7. Service role remains the only actor for finalization and cross-user
+    admin (account deletion) — unchanged.
+
+Do not implement any of this now; this is the target description only.
+
+================================================================================
+20. STORAGE TARGET
+================================================================================
+Keep both buckets; make the layout express ownership:
+
+  profile-images/
+    {uid}/source-photo-{uuid}.{ext}     USER-SPECIFIC (delete with account)
+
+  model-images/
+    {uid}/personal-model-{uuid}.png     CHARACTER-SPECIFIC (delete with
+                                        character, then account)
+    {uid}/clothing-originals/{uuid}.*   WARDROBE/UPLOAD (delete with item,
+                                        then account)
+    {uid}/clothing-previews/{uuid}.png  WARDROBE preview (same)
+    {uid}/clothing-assets/{item}-{bt}-  GENERATED ASSET — delete only when
+        {uuid}.png                      no asset ROW references it; else
+                                        with item/account [new naming 17.5]
+    {uid}/clothing/{characterId}/       LEGACY generated-asset layout (keep
+        {uuid}.png                      reading; migrate lazily)
+    {uid}/wardrobe-results/{uuid}.png   GENERATED RESULT (with result row /
+                                        character / account)
+    {uid}/try-on-{uuid}.{ext}           GENERATED RESULT (same)
+    system-reference/base-forms/*.png   SHARED/PLATFORM — never deleted by
+                                        user actions
+    (future) shared-assets/...          SHARED catalogue — only if
+                                        cross-user reuse is adopted
+
+Deletion rules (target):
+  - WITH THE ACCOUNT: everything under `{uid}/` in both buckets.
+  - WITH A CHARACTER: personal-model PNG, its wardrobe_results, and — ONLY
+    when the base type loses its last normalized character — that base
+    type's generated-asset files whose rows are being deleted (18/E2).
+  - WITH A WARDROBE ITEM: originals, previews, and the asset files of BOTH
+    base types (their rows cascade).
+  - NEVER: system-reference/** and (future) shared-assets/**.
+  - Never delete a file while any wardrobe_item_ai_assets row still points
+    at it (reverse lookup first — 18 hard rule).
+  - Order: DB rows (transactional) -> storage (idempotent, retried) ->
+    verification query (zero remaining objects under a removed prefix).
+  No storage changes are made by this audit.
+
+================================================================================
+21. FUTURE MIGRATION PLAN (SEVERAL SMALL, SAFE STEPS)
+================================================================================
+Order matters; each step is independently testable and reversible.
+NOTHING below is implemented by this audit.
+
+ M1 — Bring `profiles` into version control
+  purpose: close F37/F38 (unknown definition/cascade/RLS)
+  tables: profiles — guarded CREATE/ALTER via DO-blocks matching the live
+    columns; add auth.users FK ON DELETE CASCADE ONLY after verifying none
+    exists
+  relationships: possibly adds the auth FK (verify first!)
+  RLS: create-if-missing own-row SELECT/INSERT/UPDATE; still no client
+    DELETE
+  storage: none | data migration: none (guards everywhere)
+  test: own-profile select/insert/update works; cross-user denied (22)
+
+ M2 — Account deletion endpoint (code, not SQL) + storage sweep
+  purpose: fix F27/F03 — the headline user problem
+  tables: none (existing cascades do the work)
+  relationships/RLS: unchanged (service role only)
+  storage: new server routine removing `{uid}/` prefixes (idempotent)
+  test: create account -> use app -> delete account -> RE-SIGNUP with the
+    same email succeeds; zero storage objects under the old uid (22)
+
+ M3 — Revoke client DELETE on wardrobe_item_ai_assets
+  purpose: fix F08
+  tables: wardrobe_item_ai_assets
+  RLS: drop "Users can delete their own base-type clothing assets"
+  storage: none
+  test: item delete still works (server path); direct user DELETE fails (22)
+
+ M4 — Character storage sweep completeness
+  purpose: fix F04 (folders of previously deleted characters)
+  code first (characters/[id].ts) collecting ALL `{uid}/clothing/%` paths
+    for base types losing coverage; optional SQL variant: extra path-list
+    parameter on delete_dressed_character
+  relationships/RLS/storage-schema: unchanged
+  test: 2 characters -> assets generated under each -> delete both in
+    sequence -> files removed only when the base type becomes uncovered (22)
+
+ M5 — Saved-outfit survival on item delete (OPTIONAL, product decision)
+  purpose: fix F32
+  tables: replace trigger remove_saved_outfits_for_deleted_item with a
+    version that removes the item_id from item_ids and deletes the outfit
+    only when the array becomes empty
+  RLS: none
+  test: outfit of 3 items; delete 1 -> outfit survives with 2; delete all
+    -> outfit removed (22)
+
+ M6 — Unify try-on finalization
+  purpose: fix F30 — code switches sync routes to
+    finish_ai_generation_server; ONLY AFTER that ships, revoke the
+    authenticated grant on finish_ai_generation
+  functions/grants: 0016 function already exists
+  test: failed try-on refunds used_count; successful one still counts (22)
+
+ M7 — Asset storage naming for NEW assets (OPTIONAL)
+  purpose: decouple storage from characterId (D5)
+  code: clothing-job.ts path template only; no schema change
+  test: regenerate asset -> path under clothing-assets/; item delete
+    removes it (22)
+
+ M8 — Ops cleanup of the seeded override row (OPTIONAL, later)
+  purpose: fix F31 (test data shipped in a migration)
+  tables: ai_generation_limit_overrides (explicit delete/keep)
+  test: test account quota unchanged; other users unchanged (22)
+
+ M9 (OPTIONAL) — ai_generation_events audit table
+  purpose: observability for F29/F30 (server-insert only, RLS SELECT own)
+  test: success/failure/abandon each produce exactly one event (22)
+
+Rules for every step: (a) additive/guarded SQL, (b) reviewed against the
+section-13 history, (c) applied to a staging project first, (d) verified
+with the matching section-22 checklist, (e) committed to the repo BEFORE
+being run anywhere — never again "live-only" like 0003/0004/0006/0007.
+
+================================================================================
+22. TEST PLAN (AFTER ANY FUTURE DATABASE CHANGE)
+================================================================================
+
+### Authentication
+ [A1] Create account with new email -> session created, profile page loads.
+ [A2] Log out / log in with password -> session restored.
+ [A3] Wrong password -> rejected.
+ [A4] Delete account (M2) -> all DB rows for that uid gone
+      (profiles, characters, items, assets, results, outfits, usage,
+      overrides), verified by a service-role count query.
+ [A5] Recreate account with the SAME email -> signup succeeds (F27 fix)
+      and the old account's data does NOT reappear.
+ [A6] Unconfirmed signup then retry -> documented, expected error only.
+ [A7] Cross-user token against another uid's rows -> 0 rows / 403.
+
+### Profile
+ [P1] First profile load creates exactly ONE profiles row (idempotent —
+      reload twice, still one row).
+ [P2] Generate character -> dressed_characters row + is_primary + contract
+      'normalized-v1'; profiles.model_photo_path mirrors it; status =
+      'completed'.
+ [P3] Attempt to change gender after set -> rejected by trigger (0001).
+ [P4] Generate a second character -> previous flips to is_primary=false;
+      one-primary index holds.
+ [P5] Delete a non-primary character -> row gone; its model file gone;
+      outfits bound to it gone (document expected cascade).
+ [P6] Delete the primary -> replacement promoted; profiles updated;
+      guards: last character (409), no normalized replacement (409).
+ [P7] Character generation failure -> status 'failed', no orphan PNG,
+      quota refunded (M6-era check).
+
+### Clothing
+ [C1] Upload garment -> wardrobe_items row + original file under
+      {uid}/clothing-originals/; moderation enforced.
+ [C2] Clean preview generated -> preview file + preview_path set; failure
+      paths leave no file.
+ [C3] Create AI clothing asset -> asset row (uid,item,base_type) v3 +
+      file under {uid}/clothing/...; used_count +1 ONLY on success.
+ [C4] Closet shows "AI READY" only for baseType == primary gender.
+ [C5] Use in DRESSED -> layer renders with correct anchor/base type.
+ [C6] Delete wardrobe item -> item row, BOTH asset rows, their files,
+      original, preview, related results all gone; NO other item affected.
+ [C7] Reuse clothing asset -> same reference_path reused by a second
+      saved outfit and a second character of the same base type (no
+      regeneration, no extra quota).
+ [C8] Regenerate asset (force header in DEV) -> old file removed, new file
+      present, row upserted (still one row per (item,base_type)).
+ [C9] (M3) Direct client DELETE on wardrobe_item_ai_assets now FAILS.
+ [C10] (M4) Delete 2 characters in sequence -> no stale files under any
+      {uid}/clothing/% folder once the base type is uncovered.
+
+### Outfits
+ [O1] Create outfit (selection) -> no DB write until save.
+ [O2] Save outfit -> saved_dressed_outfits row; duplicate name+same items
+      upserts; different items create a second row.
+ [O3] Save with an item lacking a current v3 asset -> rejected (0014 check).
+ [O4] Load saved outfit -> items render; layer order preserved.
+ [O5] Delete saved outfit -> row gone; items/assets untouched.
+ [O6] (M5) Delete one item of a 3-item outfit -> outfit survives with the
+      item removed; deleting the last referenced item removes the outfit.
+
+### AI
+ [AI1] Character generation (background) -> character appears; usage +1.
+ [AI2] Clothing generation (background) -> asset appears; usage +1 only on
+      success; failure -> usage unchanged, lock released.
+ [AI3] Try-on success -> result file + usage +1.
+ [AI4] Try-on failure -> (after M6) usage refunded; lock released.
+ [AI5] Cancelled/abandoned job -> lock self-heals after 5 minutes; next
+      attempt succeeds; (M9) exactly one event row.
+ [AI6] Quota reservation: N-th generation at the limit -> 429 with correct
+      free_limit shown; owner/override account passes (AI7).
+ [AI7] Override account reaches clothing limit -> still allowed (100);
+      normal account blocked at 3.
+ [AI8] Concurrent double-click -> second request gets 409
+      'already_in_progress'.
+
+### Security
+ [S1] Anon key with no session against every table -> 0 rows / denied.
+ [S2] User A queries User B's items/characters/assets/outfits/results ->
+      empty; A cannot SELECT B's storage objects (signed URL 404).
+ [S3] RLS spot-check per table (12.1-12.9) using two test accounts.
+ [S4] Storage: A cannot upload into B's prefix; A cannot delete B's
+      objects; both can read the two system-reference base-form files.
+ [S5] Client attempts to UPDATE ai_generation_usage / limits / overrides
+      -> denied; only RPCs change counters.
+ [S6] SECURITY DEFINER functions called with a forged/absent uid -> raise
+      'Authentication is required.'
+
+### Deletion
+ [D1] Account deletion (M2): rows gone, storage under {uid}/ gone (count
+      query = 0 in BOTH buckets), shared system-reference files intact.
+ [D2] Re-signup after deletion works with the same email.
+ [D3] Database cleanup: no orphan rows in any table for the deleted uid
+      (service-role queries per table from 4.1).
+ [D4] Storage cleanup: no objects under the deleted prefix; reusable/other
+      users' assets untouched.
+ [D5] Reusable asset preservation: with 2 characters of one base type,
+      deleting ONE character keeps asset rows + files usable; deleting the
+      second (last) removes exactly those base-type assets and nothing
+      else (M4 sweep).
+ [D6] Partial-failure drills: storage.remove() forced to fail -> DB state
+      consistent, retry possible, no double-delete of rows.
+
+================================================================================
+23. FINAL RECOMMENDATION
+================================================================================
+
+## CURRENT ARCHITECTURE
+Supabase Auth (auth.uid() = the only user id) + a `profiles` projection
+created client-side + DRESSED domain tables keyed by (user_id, ...) with
+ON DELETE CASCADE from auth.users, written through SECURITY DEFINER RPCs
+where integrity matters, guarded by per-user RLS, storing images in two
+private uid-prefixed buckets, with quota counters (limits/usage/overrides)
+reserved and finalized by definer functions (service-role finalization for
+clothing). Reusable clothing = one asset row per (user, item, base_type)
+referencing an opaque storage path; characters gate assets only by gender
+base type. [CONFIRMED BY CODE / MIGRATION; `profiles` + storage policies
+partly UNKNOWN]
+
+## CONFIRMED PROBLEMS
+ - No account deletion exists; profile deletion cannot free the email ->
+   "user already exists" (F01/F27, section 1.7).
+ - Storage never follows the DB: an auth delete orphans every file
+   (F03, 4.1); the character-folder sweep misses previously deleted
+   characters' folders (F04, 4.4).
+ - Failed sync try-on and abandoned character jobs permanently consume
+   quota (F05/F06/F29/F30).
+ - Client holds DELETE on asset rows without file cleanup (F08, 12.4).
+ - Deleting an item silently deletes whole saved outfits (F14/F32).
+ - Test-account UUID seeded in a shipped migration (F18/F31).
+ - Migrations 0003/0004/0006/0007/0009 are missing from the repo (F19).
+
+## POSSIBLE PROBLEMS
+ - Unconfirmed pending auth rows also block re-signup (F33).
+ - Orphaned files when a process dies between upload and DB write (F34).
+ - Orphaned files when storage.remove() fails after a row delete (F35).
+ - Live bucket policies/lifecycle rules may differ from the repo
+   (F36, F40).
+
+## WHAT IS WORKING
+ - Ownership enforcement: every repo table policy and API query is scoped
+   to auth.uid(); path CHECKs mirror uid into storage paths (F12).
+ - Row-level cascade integrity: account/character/item deletions clean up
+   dependants correctly via FKs and RPCs (F13-F15).
+ - Base-type reusable assets: one row per (item, base_type), reused across
+   outfits and characters without copying (5.6, D1).
+ - Quota plumbing: in-progress lock, 5-minute stale recovery, service-role
+   clothing finalization, JWT-based owner exemption, deny-all override
+   table (F16-F18, section 10).
+ - Character model: one-primary index, gender lock, geometry-contract
+   gating end-to-end (F20).
+ - Item/character delete endpoints clean storage thoroughly for the paths
+   they know about (items/[id].ts, characters/[id].ts).
+
+## USER-ALREADY-EXISTS PROBLEM
+Cause (CONFIRMED BY CODE): the app has no path that deletes auth.users;
+whatever deleted "the profile" removed only the profiles row. Supabase
+signup uniqueness lives in auth.users, so signUp fails with
+user_already_exists and the UI shows "An account with this email already
+exists" (signup.astro:164-169). The surviving auth user can still log in,
+and the profile row silently re-creates itself on the next /profile visit —
+while the email stays permanently unusable for a new signup.
+Fix direction (NOT implemented): a real account-deletion flow (M2) that
+deletes the auth user (cascading rows) and sweeps `{uid}/` storage; plus
+optionally a server-side profile-creation trigger so profiles never drift.
+
+## CLOTHING REUSABILITY
+Current: reusable WITHIN one user across characters/outfits of the same
+base type; never shared between users; keyed (user, item, base_type);
+files under a character-named folder but character-independent rows.
+Risks: last-character deletion removes those assets (scoped, arguably
+intended); folders of earlier deleted characters leak (F04); client DELETE
+can orphan files (F08); item deletion cascades assets (correct — they are
+per-item). Hard rule: never delete an asset file while a row still
+references it (section 18).
+
+## ACCOUNT DELETION
+No feature exists. Target: service-role endpoint -> delete auth.users
+(cascades all rows, including profiles once verified) -> sweep `{uid}/` in
+both buckets -> verify zero orphans -> email released. Character/item/
+outfit rules as in section 18, with reverse-lookup protection for
+reusable assets.
+
+## STORAGE
+Two private buckets; uid prefixes encode ownership; shared masters under
+system-reference/. Deletion is 100% application-initiated; DB deletes never
+touch files. Orphan classes: account deletion, character-folder leftovers,
+mid-crash uploads, failed removes (11.4). Target layout and deletion order
+in section 20; bucket policies should be captured as SQL.
+
+## RLS
+Consistent per-user model using the definer-RPC pattern; deny-all on
+overrides; service-role-only asset writes. Gaps: `profiles` and user-folder
+storage policies are outside the repo (UNKNOWN); client DELETE on assets is
+too permissive; legacy table grants are redundant. Target guarantees in
+section 19, including "uid prefix in storage <=> user_id in table; shared
+objects have neither".
+
+## QUOTA SYSTEM
+Two coexisting counting philosophies (count-at-reserve vs
+count-at-success) in one table; refunds work only on background paths;
+overrides and owner exemption are correctly hardened. Fix direction:
+unify finalization on the server finalizer (M6), add observability (M9),
+remove the shipped test seed (M8).
+
+## RECOMMENDED TARGET ARCHITECTURE
+As section 17: keep auth.uid() as the single identity; version-control
+profiles; keep characters/items/outfits schema as-is; keep base-type assets
+with service-role writes but drop client DELETE; decouple asset storage
+folders from characterId for new files; derive every deletion from a reverse
+lookup of reference_path; add account deletion with a storage sweep; capture
+storage policies as migrations; optionally add an ai_generation_events
+audit table. All of it stays inside the existing PROFILE -> CLOSET ->
+DRESSED structure.
+
+## SMALLEST SAFE IMPLEMENTATION PLAN
+M1 profiles into version control -> M2 account deletion + storage sweep
+(fixes the reported user problem) -> M3 revoke asset client DELETE ->
+M4 complete character storage sweep -> M6 try-on finalization unification
+-> then optional M5/M7/M8/M9. Each step is small, additive or guarded,
+independently testable with section 22, and committed to the repo BEFORE
+being run anywhere (section 21).
+
+## TEST PLAN
+Full checklist: section 22 — Authentication A1-A7 (incl. delete account +
+recreate with same email), Profile P1-P7 (create/update/delete character,
+personal model), Clothing C1-C10 (upload, AI-ready, closet, DRESSED, delete,
+reuse), Outfits O1-O6 (create/save/load/delete + item-deletion effect),
+AI AI1-AI8 (character, clothing, try-on, failure, cancellation/abandonment,
+reservation, finalization), Security S1-S6 (unauthorized, cross-user, RLS,
+storage), Deletion D1-D6 (account, DB cleanup, storage cleanup, reusable
+asset preservation). Run against STAGING after every migration, using two
+test accounts for all cross-user cases.
+
+## THINGS WE SHOULD NOT CHANGE
+ - dressed_characters schema, the one-primary index, geometry-contract
+   gating, and the publish/set_primary/delete RPC pattern.
+ - The (user_id, item_id, base_type) asset PK and base_type gating.
+ - The per-user RLS + SECURITY DEFINER architecture (do not "open up"
+   tables to the client).
+ - The uid-prefixed storage layout and the two-bucket split.
+ - Quota limit VALUES (character 1 / clothing 3 / tryon 1) and the
+   5-minute stale-lock rule.
+ - The gender lock and profiles.gender check.
+ - The legacy asset table's data (read-only preservation).
+ - Existing delete endpoints' row cleanup (only EXTEND storage-sweep
+   completeness).
+ - Nothing should be fixed speculatively: implement only with the matching
+   section-22 tests written first.
+
+## FILES INSPECTED
+ Migrations: all 12 files under supabase/migrations/ (full text): 0001,
+   0002, 0005, 0008, 0010, 0011, 0012, 0013, 0014, 0015, 0016,
+   202610050001.
+ Auth/flow pages: src/pages/signup.astro (100-201), login.astro (106-155),
+   profile.astro (605-700, 835-875, 940-975, 1460-1550, character cards
+   520-560), wardrobe.astro (264-430), closet.astro (badge/selection refs).
+ API routes: api/ai/{process-clothing, personal-model, dress-model,
+   try-on, usage}.ts; api/wardrobe/items/{index, [id]}.ts;
+   api/wardrobe/outfits/{index, [id]}.ts; api/characters/[id].ts (full);
+   api/profile/source-photo.ts.
+ Server libs: lib/server/supabase.ts; lib/server/ai/generation-usage.ts
+   (full), base-forms.ts, jobs/character-job.ts, jobs/clothing-job.ts,
+   openai-images.ts (refs), background.ts / job-launcher.ts (refs).
+ Client libs: lib/client/wardrobe-ai.ts (1-135+), profile-outfits.ts,
+   generation-usage.ts (refs).
+ Shared: lib/shared/{clothing-assets, clothing-categories,
+   clothing-geometry, dressed-base-forms}.ts.
+ Scripts: scripts/set-owner.mjs (only auth.admin usage in the repo).
+ Analysis docs: analysis/*.md (5 files, for DOCUMENTED INTENT).
+ Commands: recursive listings of supabase/, src/pages/api, src/lib;
+   targeted scans for profiles usage / auth.admin / storage.from /
+   reserve|finish functions / rpc calls; git status and diff --numstat.
+
+## MIGRATIONS INSPECTED
+ 202610040001_dressed_ai_wardrobe.sql .................... full read
+ 202610040002_character_bound_clothing_assets.sql ......... full read
+ 202610040005_clothing_previews_and_asset_versions.sql .... full read
+ 202610040008_clothing_ai_generation_commit.sql ........... full read
+ 202610040010_base_type_clothing_assets.sql ............... full read
+ 202610040011_secure_clothing_generation_finalization.sql  full read
+ 202610040012_normalized_character_geometry_and_saved_outfits.sql full read
+ 202610040013_add_socks_category.sql ...................... full read
+ 202610040014_fix_save_dressed_outfit_ambiguity.sql ....... full read
+ 202610040015_ai_quota_limits_and_owner_exemption.sql ..... full read
+ 202610040016_background_ai_generation_finalization.sql ... full read
+ 202610050001_clothing_quota_override_test_user.sql ....... full read
+ NOT PRESENT (requested, absent from the repository — section 13):
+   202610040003_fix_wardrobe_item_rlS,
+   202610040004_reusable_character_outfit_results,
+   202610040006_create_primary_dressed_character,
+   202610040007_check_character_clothing_assets (and 0009).
+
+--------------------------------------------------------------------------------
+END OF REPORT — ANALYSIS ONLY. No code, migration, RLS policy, storage object
+or data was created, modified or deleted. This file is the only artefact.
+--------------------------------------------------------------------------------
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

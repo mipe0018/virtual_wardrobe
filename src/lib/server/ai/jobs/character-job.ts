@@ -25,19 +25,26 @@ export function characterPrompt(gender: "woman" | "man", hasBaseForm: boolean): 
 
   const identity = hasBaseForm
     ? [
-        "Image 1 is the user's identity reference. Use it only for the person's face, hairstyle, hair color, skin tone, and other visible identity characteristics.",
-        `Image 2 is the canonical DRESSED ${gender} base form and the geometric master. Follow image 2 for the fixed 1024x1536 canvas, the centered placement, the straight front-facing pose, and the overall character geometry. Do not copy image 2's face, hair, or identity, and do not copy image 1's crop, camera framing, or pose.`,
+        "Image 1 is the user's identity reference and supplies IDENTITY INFORMATION ONLY: the person's face, identity, hairstyle, hair color, skin tone, and other visible facial characteristics.",
+        `Image 2 is the canonical DRESSED ${gender} base form. It is the FIXED GEOMETRY MASTER and the single authoritative source for this character's body. Do not copy image 2's face, hair, or identity.`,
+        "MASTER GEOMETRY IS A HARD CONSTRAINT. Reproduce image 2's geometry exactly. Image 2 alone and exclusively determines the 1024x1536 canvas, the exact body height, the body proportions, the body width, the silhouette, the pose, the stance, the arm position, the head and body placement, the scale, the camera framing, and the position of the figure on the canvas.",
+        "CONFLICT RULE: if image 1 and image 2 disagree about anything geometric, IMAGE 2 ALWAYS WINS. Adapt the person's identity to image 2's geometry; never adapt, resize, reshape, re-pose, re-frame, or re-scale image 2's geometry to match image 1.",
+        "IMAGE 1 MUST NOT INFLUENCE body height, body proportions, body width, silhouette, pose, stance, arm position, head and body placement, scale, camera angle, camera distance, framing, crop, position on the canvas, or canvas dimensions. Even if the person in image 1 is taller, shorter, broader, slimmer, differently posed, differently cropped, closer to or further from the camera, or off-centre, the result must still match image 2's geometry exactly.",
+        "TRANSPLANT RULE: keep the user's recognizable face, hairstyle, hair color, and skin tone from image 1, and place that identity onto image 2's head at image 2's scale, in image 2's pose, stance, arm position, and position on the canvas.",
       ]
     : ["Image 1 is the user's identity reference."];
 
+  const geometry = hasBaseForm
+    ? "Copy image 2's pose, stance, arm position, hand position, leg position, foot placement, head tilt, gaze direction, and body alignment exactly. Do not substitute a different, straighter, more relaxed, or more natural pose, and do not re-pose the figure."
+    : "Create a polished, centered, straight, front-facing full-body DRESSED fashion character, with the full head and hair visible and the entire figure within a 2:3 canvas. Use a relaxed standing pose with the arms slightly away from the sides and both feet visible.";
+
   return [
     ...identity,
-    "Create a polished, centered, straight, front-facing full-body DRESSED fashion character, with the full head and hair visible and the entire figure within a 2:3 canvas.",
     "Keep the user's recognizable face, hairstyle, hair color, and skin tone, without any eyewear or other worn items.",
     "Use a playful 1990s/Clueless-inspired fashion illustration style.",
     genderStyle,
     "Keep the hair behind the shoulders so the area where clothing layers will be placed stays clear.",
-    "Use a relaxed standing pose with the arms slightly away from the sides and both feet visible.",
+    geometry,
     "Use a simple, matte, opaque, solid-color sleeveless top and a simple, matte, opaque, solid-color short garment as a neutral character base, in a solid neutral color. The base outfit is only a visual foundation for the DRESSED clothing layers, and clothing from the source photo is not carried over. No shoes and no permanent fashion items.",
     "Create the character without wearable accessories so accessories can be added later as separate DRESSED layers. Draw a clean, bare face with clearly visible eyes and ears, and a plain neck and wrists. Items worn in image 1, such as glasses, sunglasses, hats, earrings, necklaces, bracelets, watches, bags, scarves and hair accessories, are not part of the person's identity and are left out; the hair itself is kept as in image 1.",
     "Use a clean, uniform, pure white background (#FFFFFF) across the whole canvas, replacing the background of image 2 and image 1, with soft, even studio-style lighting and no gradient, shadow on the background, or props.",
@@ -60,6 +67,7 @@ export async function runCharacterJob(env: JobEnv, payload: CharacterJobPayload)
   const { userClient, serviceClient } = createJobClients(env, accessToken);
   let succeeded = false;
   let generatedPath: string | null = null;
+  let replacedModelPath: string | null = null;
   try {
     setOpenAiApiKey(env.openaiKey);
     if (!(await jobUserIsValid(serviceClient, accessToken, userId))) {
@@ -118,6 +126,20 @@ export async function runCharacterJob(env: JobEnv, payload: CharacterJobPayload)
       throw new Error("Could not save the generated character to your account.");
     }
 
+    // Capture the currently active character image BEFORE publishing, because the publish
+    // call flips the previous row to is_primary = false. It is only removed later, once
+    // the replacement is confirmed published.
+    const { data: previousCharacter, error: previousLookupError } = await userClient
+      .from("dressed_characters")
+      .select("model_path")
+      .eq("user_id", userId)
+      .eq("is_primary", true)
+      .maybeSingle<{ model_path: string | null }>();
+    if (previousLookupError) {
+      console.error("Could not read the character this generation replaces.", previousLookupError);
+    }
+    replacedModelPath = previousCharacter?.model_path ?? null;
+
     const { data: characterId, error: publishError } = await userClient.rpc(
       "publish_dressed_character",
       { p_model_path: generatedPath, p_gender: gender }
@@ -141,5 +163,21 @@ export async function runCharacterJob(env: JobEnv, payload: CharacterJobPayload)
       serviceClient, userId, "character", reservationStartedAt, succeeded
     );
     if (!released) console.error("The character reservation was already released or expired.");
+  }
+
+  // The replacement is published and active, so the previous character image is now
+  // unreferenced. Removal happens only here — never before the publish succeeded — and a
+  // failure here is non-fatal, because the new character is already live.
+  if (succeeded && replacedModelPath && replacedModelPath !== generatedPath) {
+    if (!replacedModelPath.startsWith(`${userId}/`)) {
+      console.error("Skipped removing a replaced character image outside the user's folder.");
+    } else {
+      const { error: replacedRemovalError } = await serviceClient.storage
+        .from("model-images")
+        .remove([replacedModelPath]);
+      if (replacedRemovalError) {
+        console.error("Could not remove the replaced DRESSED character image.", replacedRemovalError);
+      }
+    }
   }
 }
