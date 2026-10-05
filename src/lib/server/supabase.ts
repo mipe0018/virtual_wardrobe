@@ -1,4 +1,6 @@
 import { createClient, type SupabaseClient, type User } from "@supabase/supabase-js";
+// Side effect: registers the astro:env OpenAI key for every route that authenticates.
+import "./ai/config";
 
 type AuthenticatedRequest = {
   ok: true;

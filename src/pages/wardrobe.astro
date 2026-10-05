@@ -79,6 +79,27 @@ import ProfileTheme from "../components/ProfileTheme.astro";
               <button type="button" id="clear-outfit">CLEAR OUTFIT</button>
               <p class="outfit-message" id="outfit-message" role="status" aria-live="polite"></p>
             </div>
+
+            <section class="placement-panel" id="placement-panel" aria-label="Placement editor" hidden>
+            <div class="placement-panel-title">
+              <span>ADJUST PLACEMENT</span>
+              <span id="placement-item-name"></span>
+            </div>
+            <label class="placement-field" for="placement-anchor">
+              <span>ATTACH ANCHOR</span>
+              <select id="placement-anchor"></select>
+            </label>
+            <label class="placement-field" for="placement-scale">
+              <span>SIZE <small id="placement-scale-value">1.00x</small></span>
+              <input id="placement-scale" type="range" min="0.4" max="2" step="0.01" value="1" />
+            </label>
+            <small class="placement-readout" id="placement-readout"></small>
+            <p class="placement-hint">DRAG THE ITEM ON THE MODEL TO REPOSITION IT.</p>
+            <div class="placement-actions">
+              <button type="button" id="placement-reset">RESET</button>
+              <button type="button" id="placement-done">DONE</button>
+            </div>
+            </section>
           </section>
         </aside>
 
@@ -98,7 +119,9 @@ import ProfileTheme from "../components/ProfileTheme.astro";
     categoryLabel,
     clothingLayerOrder,
     clothingPlacement,
+    dressedAnchor,
     DRESSED_ANCHORS,
+    type DressedAnchor,
   } from "../lib/shared/clothing-categories";
   import {
     CURRENT_CLOTHING_ASSET_VERSION,
@@ -196,6 +219,108 @@ import ProfileTheme from "../components/ProfileTheme.astro";
     renderCharacterLayers();
   }
 
+  /* ---- PLACEMENT EDITOR (per-item) -------------------------------------
+   * Placement and layering stay INDEPENDENT: this block only writes the
+   * per-layer CSS variables the existing transform already consumes
+   * (--anchor-x/y, --clothing-scale, --clothing-x/y). Layer order stays
+   * owned by selectedItems + clothingLayerOrder (zIndex) and is never
+   * touched here. Defaults come from the existing clothingPlacement()
+   * (category) + dressedAnchor() (base type / master geometry) system.
+   * The AI asset file itself is never modified — only render metadata. */
+  type PlacementOverride = {
+    anchor: DressedAnchor;
+    x: number;
+    y: number;
+    scale: number;
+  };
+
+  const PLACEMENT_SCALE_MIN = 0.4;
+  const PLACEMENT_SCALE_MAX = 2;
+  const PLACEMENT_OFFSET_LIMIT = 60; // percent of canvas, per axis
+
+  const placementOverrides = new Map<string, PlacementOverride>();
+  let editingItemId: string | null = null;
+
+  const placementPanel = document.querySelector<HTMLElement>("#placement-panel");
+  const placementTitle = document.querySelector<HTMLElement>("#placement-item-name");
+  const placementAnchorSelect = document.querySelector<HTMLSelectElement>("#placement-anchor");
+  const placementScaleInput = document.querySelector<HTMLInputElement>("#placement-scale");
+  const placementScaleValue = document.querySelector<HTMLElement>("#placement-scale-value");
+  const placementReadout = document.querySelector<HTMLElement>("#placement-readout");
+  const placementResetButton = document.querySelector<HTMLButtonElement>("#placement-reset");
+  const placementDoneButton = document.querySelector<HTMLButtonElement>("#placement-done");
+
+  // Anchor options come from the EXISTING anchor table only (no new anchors).
+  Object.keys(DRESSED_ANCHORS).forEach((anchorKey) => {
+    const option = document.createElement("option");
+    option.value = anchorKey;
+    option.textContent = anchorKey.toUpperCase();
+    placementAnchorSelect?.appendChild(option);
+  });
+
+  function resolveLayerPlacement(item: WardrobeItem): PlacementOverride {
+    const override = placementOverrides.get(item.id);
+    if (override) return override;
+    const base = clothingPlacement(item.category);
+    return { anchor: base.anchor, x: base.x, y: base.y, scale: base.scale };
+  }
+
+  function placementLayerElement(itemId: string): HTMLElement | null {
+    return wardrobeModel.querySelector<HTMLElement>(
+      `.dressed-clothing-layer[data-item-id="${CSS.escape(itemId)}"]`
+    );
+  }
+
+  function applyLayerPlacement(item: WardrobeItem, layer: HTMLElement) {
+    const placement = resolveLayerPlacement(item);
+    const anchorPoint = dressedAnchor(placement.anchor, primaryCharacterBaseType);
+    layer.dataset.anchor = placement.anchor;
+    layer.style.setProperty("--anchor-x", String(anchorPoint.x));
+    layer.style.setProperty("--anchor-y", String(anchorPoint.y));
+    layer.style.setProperty("--clothing-scale", String(placement.scale));
+    layer.style.setProperty("--clothing-x", `${placement.x}%`);
+    layer.style.setProperty("--clothing-y", `${placement.y}%`);
+    layer.classList.toggle("dressed-clothing-layer--editing", item.id === editingItemId);
+  }
+
+  function setPlacementOverride(itemId: string, patch: Partial<PlacementOverride>) {
+    const item = selectedItems.find((entry) => entry.id === itemId);
+    if (!item) return;
+    const next = { ...resolveLayerPlacement(item), ...patch };
+    next.scale = Math.min(PLACEMENT_SCALE_MAX, Math.max(PLACEMENT_SCALE_MIN, next.scale));
+    next.x = Math.min(PLACEMENT_OFFSET_LIMIT, Math.max(-PLACEMENT_OFFSET_LIMIT, next.x));
+    next.y = Math.min(PLACEMENT_OFFSET_LIMIT, Math.max(-PLACEMENT_OFFSET_LIMIT, next.y));
+    placementOverrides.set(itemId, next);
+    const layer = placementLayerElement(itemId);
+    if (layer) applyLayerPlacement(item, layer);
+    if (itemId === editingItemId) updatePlacementPanel();
+  }
+
+  function updatePlacementPanel() {
+    const item = editingItemId
+      ? selectedItems.find((entry) => entry.id === editingItemId)
+      : undefined;
+    if (
+      !item ||
+      !placementPanel ||
+      !placementTitle ||
+      !placementAnchorSelect ||
+      !placementScaleInput ||
+      !placementScaleValue ||
+      !placementReadout
+    ) {
+      closePlacementEditor();
+      return;
+    }
+    const placement = resolveLayerPlacement(item);
+    placementTitle.textContent = item.name.toUpperCase();
+    placementAnchorSelect.value = placement.anchor;
+    placementScaleInput.value = String(placement.scale);
+    placementScaleValue.textContent = `${placement.scale.toFixed(2)}x`;
+    placementReadout.textContent =
+      `X ${placement.x.toFixed(1)}%   Y ${placement.y.toFixed(1)}%   SIZE ${placement.scale.toFixed(2)}x`;
+  }
+
   function renderCharacterLayers() {
     const layers = wardrobeModel.querySelector<HTMLElement>(".dressed-clothing-layers");
     if (!layers) return;
@@ -219,17 +344,118 @@ import ProfileTheme from "../components/ProfileTheme.astro";
         layer.alt = "";
         layer.dataset.itemId = item.id;
         layer.style.zIndex = String(index + 1);
-        const placement = clothingPlacement(item.category);
-        const anchorPoint = DRESSED_ANCHORS[placement.anchor];
-        layer.dataset.anchor = placement.anchor;
-        layer.style.setProperty("--anchor-x", String(anchorPoint.x));
-        layer.style.setProperty("--anchor-y", String(anchorPoint.y));
-        layer.style.setProperty("--clothing-scale", String(placement.scale));
-        layer.style.setProperty("--clothing-x", `${placement.x}%`);
-        layer.style.setProperty("--clothing-y", `${placement.y}%`);
+        applyLayerPlacement(item, layer);
         layers.appendChild(layer);
       });
   }
+
+  function openPlacementEditor(itemId: string) {
+    if (!selectedItems.some((entry) => entry.id === itemId)) return;
+    editingItemId = itemId;
+    if (placementPanel) placementPanel.hidden = false;
+    renderCurrentOutfit();
+    renderCharacterLayers();
+    updatePlacementPanel();
+  }
+
+  function closePlacementEditor() {
+    const previousId = editingItemId;
+    editingItemId = null;
+    if (placementPanel) placementPanel.hidden = true;
+    if (previousId) {
+      placementLayerElement(previousId)?.classList.remove("dressed-clothing-layer--editing");
+      const button = currentOutfitItems.querySelector<HTMLButtonElement>(
+        `.adjust-outfit-item[data-item-id="${CSS.escape(previousId)}"]`
+      );
+      if (button) {
+        button.setAttribute("aria-pressed", "false");
+        button.textContent = "ADJUST";
+      }
+    }
+  }
+
+  placementAnchorSelect?.addEventListener("change", () => {
+    if (editingItemId) {
+      setPlacementOverride(editingItemId, {
+        anchor: placementAnchorSelect.value as DressedAnchor,
+      });
+    }
+  });
+
+  placementScaleInput?.addEventListener("input", () => {
+    if (editingItemId) {
+      setPlacementOverride(editingItemId, { scale: Number(placementScaleInput.value) });
+    }
+  });
+
+  placementResetButton?.addEventListener("click", () => {
+    if (!editingItemId) return;
+    placementOverrides.delete(editingItemId);
+    const item = selectedItems.find((entry) => entry.id === editingItemId);
+    const layer = placementLayerElement(editingItemId);
+    if (item && layer) applyLayerPlacement(item, layer);
+    updatePlacementPanel();
+  });
+
+  placementDoneButton?.addEventListener("click", () => {
+    closePlacementEditor();
+    renderCurrentOutfit();
+  });
+
+  /* Live drag of the ACTIVE layer. Deltas are converted to canvas percent
+     (the layer img is exactly the canvas box, so translate() percentages
+     map 1:1 to canvas movement). Uniform scale() in CSS guarantees the
+     aspect ratio can never break. Only the editing layer has pointer
+     events, so dragging can never reorder or touch other layers. */
+  type PlacementDrag = {
+    pointerId: number;
+    layer: HTMLElement;
+    startX: number;
+    startY: number;
+    startClientX: number;
+    startClientY: number;
+    rect: DOMRect;
+  };
+  let placementDrag: PlacementDrag | null = null;
+
+  wardrobeModel.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0 || !editingItemId) return;
+    const target = event.target instanceof Element ? event.target : null;
+    const layer = target?.closest<HTMLElement>(".dressed-clothing-layer--editing");
+    const layersElement = wardrobeModel.querySelector<HTMLElement>(".dressed-clothing-layers");
+    const item = selectedItems.find((entry) => entry.id === editingItemId);
+    if (!layer || !layersElement || !item) return;
+    const current = resolveLayerPlacement(item);
+    placementDrag = {
+      pointerId: event.pointerId,
+      layer,
+      startX: current.x,
+      startY: current.y,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      rect: layersElement.getBoundingClientRect(),
+    };
+    layer.classList.add("is-dragging");
+    layer.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  });
+
+  wardrobeModel.addEventListener("pointermove", (event) => {
+    if (!placementDrag || event.pointerId !== placementDrag.pointerId || !editingItemId) return;
+    const { rect, startClientX, startClientY, startX, startY } = placementDrag;
+    if (rect.width <= 0 || rect.height <= 0) return;
+    const deltaX = ((event.clientX - startClientX) / rect.width) * 100;
+    const deltaY = ((event.clientY - startClientY) / rect.height) * 100;
+    setPlacementOverride(editingItemId, { x: startX + deltaX, y: startY + deltaY });
+  });
+
+  const endPlacementDrag = (event: PointerEvent) => {
+    if (!placementDrag || event.pointerId !== placementDrag.pointerId) return;
+    placementDrag.layer.classList.remove("is-dragging");
+    placementDrag = null;
+  };
+  wardrobeModel.addEventListener("pointerup", endPlacementDrag);
+  wardrobeModel.addEventListener("pointercancel", endPlacementDrag);
 
   function isSafeImage(value: string) {
     return value.startsWith("data:image/") ||
@@ -387,6 +613,9 @@ import ProfileTheme from "../components/ProfileTheme.astro";
   }
 
   function renderCurrentOutfit() {
+    if (editingItemId && !selectedItems.some((item) => item.id === editingItemId)) {
+      closePlacementEditor();
+    }
     currentOutfitItems.replaceChildren();
 
     if (selectedItems.length === 0) {
@@ -453,8 +682,25 @@ import ProfileTheme from "../components/ProfileTheme.astro";
         renderClothingItems();
       });
 
+      const adjustButton = document.createElement("button");
+      adjustButton.type = "button";
+      adjustButton.className = "adjust-outfit-item";
+      adjustButton.dataset.itemId = item.id;
+      const isAdjusting = editingItemId === item.id;
+      adjustButton.textContent = isAdjusting ? "ADJUSTING" : "ADJUST";
+      adjustButton.setAttribute("aria-pressed", String(isAdjusting));
+      adjustButton.setAttribute("aria-label", `Adjust placement of ${item.name}`);
+      adjustButton.addEventListener("click", () => {
+        if (editingItemId === item.id) {
+          closePlacementEditor();
+          renderCurrentOutfit();
+        } else {
+          openPlacementEditor(item.id);
+        }
+      });
+
       layerControls.append(moveUpButton, moveDownButton, removeButton);
-      outfitItem.append(itemName, layerControls);
+      outfitItem.append(itemName, layerControls, adjustButton);
       currentOutfitItems.appendChild(outfitItem);
     });
     renderCharacterLayers();

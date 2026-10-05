@@ -1,5 +1,12 @@
 import { Buffer } from "node:buffer";
-import { openAiApiKey } from "./config";
+
+// This module is also bundled into Netlify Background Functions, where `astro:env` does
+// not exist. The key is injected via setOpenAiApiKey (Astro: ./config; functions: the job).
+let configuredApiKey: string | null = null;
+
+export function setOpenAiApiKey(key: string | null | undefined): void {
+  configuredApiKey = key || null;
+}
 
 const MODERATION_URL = "https://api.openai.com/v1/moderations";
 const IMAGE_EDIT_URL = "https://api.openai.com/v1/images/edits";
@@ -23,10 +30,10 @@ export class OpenAIImageError extends Error {
 }
 
 function getApiKey(): string {
-  if (!openAiApiKey) {
+  if (!configuredApiKey) {
     throw new OpenAIImageError("OpenAI image generation is not configured on the server.", 503);
   }
-  return openAiApiKey;
+  return configuredApiKey;
 }
 
 async function providerError(response: Response): Promise<string> {
@@ -130,6 +137,7 @@ export async function editImage(input: {
   prompt: string;
   size?: "1024x1024" | "1024x1536";
   background?: "opaque" | "transparent";
+  timeoutMs?: number;
 }): Promise<OpenAIImage> {
   const response = await requestOpenAI(IMAGE_EDIT_URL, {
     model: IMAGE_MODEL,
@@ -140,7 +148,7 @@ export async function editImage(input: {
     output_format: "png",
     background: input.background ?? "opaque",
     n: 1,
-  }, 45_000);
+  }, input.timeoutMs ?? 45_000);
 
   const body = (await response.json()) as {
     data?: Array<{ b64_json?: unknown }>;

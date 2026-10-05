@@ -11,7 +11,6 @@ type FlowState = {
   kind: FlowKind;
   label: string;
   startedAt: number;
-  keepOnReload?: boolean;
 };
 
 let panel: HTMLDivElement | null = null;
@@ -86,16 +85,16 @@ export function finishFlow(label: string) {
   window.clearTimeout(hideTimer);
   window.clearTimeout(pollTimer);
   const previous = readState();
-  // The page may reload once right after success; keep the completed state through that reload only.
   const state: FlowState = {
     status: "completed",
     kind: previous?.kind ?? "other",
     label,
     startedAt: previous?.startedAt ?? Date.now(),
-    keepOnReload: true,
   };
-  writeState(state);
+  // The server generation is finished: drop the stored state so no page or reload can revive the panel.
+  writeState(null);
   render(state);
+  hideTimer = window.setTimeout(() => render(null), 2500);
 }
 
 export function failFlow(message: string) {
@@ -108,17 +107,9 @@ export function failFlow(message: string) {
     label: message,
     startedAt: previous?.startedAt ?? Date.now(),
   };
-  writeState(state);
+  writeState(null);
   render(state);
-  hideTimer = window.setTimeout(() => {
-    writeState(null);
-    render(null);
-  }, 10000);
-}
-
-function isReload(): boolean {
-  const entry = performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined;
-  return entry?.type === "reload";
+  hideTimer = window.setTimeout(() => render(null), 6000);
 }
 
 // A generation started on another page keeps running on the server; poll its status here.
@@ -166,19 +157,11 @@ export function initGenerationFlow() {
   initialized = true;
   let state = readState();
 
-  if (state && state.status !== "running" && isReload()) {
-    if (state.keepOnReload) {
-      state = { ...state, keepOnReload: false };
-      writeState(state);
-    } else {
-      state = null;
-      writeState(null);
-    }
-  } else if (state?.status === "failed") {
+  // Only a running generation survives navigation; finished or failed states are never shown again.
+  if (state && state.status !== "running") {
     state = null;
     writeState(null);
   }
-
   if (!state) return;
   render(state);
   if (state.status === "running") void pollRunning(state);

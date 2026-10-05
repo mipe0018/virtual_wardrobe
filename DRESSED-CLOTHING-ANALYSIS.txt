@@ -1,0 +1,975 @@
+================================================================================
+DRESSED — CLOTHING PIPELINE ANALYSIS (READ-ONLY)
+Why generated clothing does not consistently fit the canonical body
+================================================================================
+
+Repository : https://github.com/mipe0018/DRESSED-DUH.git
+Branch     : clothes (HEAD b9a94ca "funktions work in male")
+Date       : 2026-10-05
+Status     : READ-ONLY ANALYSIS. No production code, prompts, CSS, anchors,
+             assets, database rows or migrations were changed. The only file
+             created is this report. Measurement scripts were written to
+             %TEMP% (outside the project) only.
+
+--------------------------------------------------------------------------------
+NOTE ON REPOSITORY STATE (important when reading line numbers below)
+--------------------------------------------------------------------------------
+The working tree is DIRTY relative to HEAD at the time of this analysis:
+
+  src/lib/client/profile-outfits.ts                (+2 / -2)
+  src/lib/server/ai/jobs/character-job.ts          (+42 / -4)
+  src/lib/shared/clothing-categories.ts            (+39 / -0)
+  src/pages/api/ai/process-clothing.ts             (+14 / -0)
+  src/pages/api/profile/source-photo.ts            (+28 / -0)
+  src/pages/wardrobe.astro                         (+2 / -2)
+  src/styles/profile.css                           (+1 / -1)
+  src/styles/wardrobe.css                          (+1 / -1)
+
+Untracked: analysis/, src/assets/system-reference/clothes/,
+supabase/migrations/202610050001_clothing_quota_override_test_user.sql, .kilo/
+
+All line references point at the CURRENT WORKING TREE, not at HEAD. Key
+uncommitted deltas relevant to fit:
+
+  * wardrobe.css:648  --clothing-base-scale fallback changed 0.56 -> 1
+  * profile.css:616   --clothing-base-scale changed 0.56 -> 1
+  * clothing-categories.ts  added dressedAnchor() + MAN_ANCHOR_Y overrides
+  * profile-outfits.ts / wardrobe.astro  now call dressedAnchor(anchor, baseType)
+  * character-job.ts  strengthened "MASTER GEOMETRY IS A HARD CONSTRAINT" prompt
+  * process-clothing.ts  added dev-only x-dressed-force-regenerate bypass
+
+A parallel checkout exists at .kilo/worktrees/quilt-ticket/ (older copies of
+some files, e.g. scale 0.56 still present). That tree was EXCLUDED; every
+reference below is to the main worktree src/.
+
+Naming corrections carried over from the previous session:
+  * There is no dressed.astro — the fitting-room page is src/pages/wardrobe.astro.
+  * analysis/Phase2-Clothing-Asset-Tests.md does NOT exist; the Phase 2 document
+    is analysis/Phase2-Woman-Tshirt-Test.md.
+
+--------------------------------------------------------------------------------
+TABLE OF CONTENTS (16 sections)
+--------------------------------------------------------------------------------
+ 1. Purpose, scope and read-only guarantee
+ 2. Method and evidence tiers
+ 3. System map (components of the clothing pipeline)
+ 4. END-TO-END pipeline trace (upload -> AI generation -> closet -> fitting room)
+ 5. The geometry contract (master forms, contract version, gating)
+ 6. The rendering / compositing model (CSS transform chain and its math)
+ 7. Anchor system and gender-specific anchor comparison
+ 8. Measurement: canonical base forms (woman.png, man.png)
+ 9. Measurement: clothing assets (repo assets + previously measured assets)
+10. Generation prompt and server-side validation analysis
+11. What works and what does not
+12. ROOT CAUSE (structured, evidence-tiered)
+13. Prior analysis documentation and documented intent
+14. Data model, migrations and versioning
+15. Open questions and discriminating experiments
+16. FILES INSPECTED (appendix)
+
+================================================================================
+1. PURPOSE, SCOPE AND READ-ONLY GUARANTEE
+================================================================================
+Goal: diagnose why AI-generated clothing does not consistently fit the
+canonical DRESSED body when rendered in the fitting room (wardrobe page),
+the profile outfit preview, and the closet flow.
+
+In scope: the full clothing path — upload of a source garment photo,
+AI "AI-ready" generation of a transparent clothing layer, storage/versioning,
+closet selection, outfit saving, and rendering/transform in the fitting room
+and profile preview.
+
+Out of scope (present but not part of the fit question): quota/usage logic,
+RLS, auth, moderation, background-function plumbing — except where they gate
+or shape the geometry path.
+
+Explicitly NOT done: no fixes, no prompt edits, no CSS edits, no anchor edits,
+no DB/migration edits, no master-form edits. This report only observes.
+
+================================================================================
+2. METHOD AND EVIDENCE TIERS
+================================================================================
+Every claim is tagged with one of five tiers:
+
+  [C-CODE]  CONFIRMED BY CODE — read directly in the current working tree,
+            quoted with file:line.
+  [C-MEAS]  CONFIRMED BY MEASUREMENT — produced by pixel measurement scripts
+            (pngjs) this session, or quoted from analysis/ documents with the
+            method stated.
+  [D-INT]   DOCUMENTED INTENT — stated in a code comment, prompt string or
+            analysis/ markdown; proves intent, not behaviour.
+  [L-HYP]   LIKELY HYPOTHESIS — consistent with evidence but not yet isolated
+            by a discriminating test.
+  [U]       UNKNOWN — cannot be decided from the repository alone.
+
+Measurement method (this session): Node + pngjs scripts in %TEMP%
+(dressed-figure.js, dressed-clothes.js, dressed-measure.js, dressed-sample.js):
+  * Base forms are RGB line drawings on white; figure = pixel differing from
+    the row's estimated background (max channel delta > 22).
+  * Clothing assets are RGBA; extent = alpha > 8 (permissive).
+    analysis/Phase2-Woman-Tshirt-Test.md shows alpha >= 128 is the correct
+    "solid garment" threshold and alpha > 1 overestimates by ~+9.8% width /
+    +33% height due to alpha haze. Differences are noted explicitly.
+
+Limitations: no browser run (no visual overlay observed this session), no
+live database queried, no new AI generation performed, and no male clothing
+assets exist in the repository (section 15).
+
+================================================================================
+3. SYSTEM MAP (COMPONENTS OF THE CLOTHING PIPELINE)
+================================================================================
+Shared (client + server):
+  src/lib/shared/clothing-categories.ts   23 categories, CLOTHING_LAYER_ORDER,
+                                          DRESSED_ANCHORS, MAN_ANCHOR_Y,
+                                          dressedAnchor(), clothingPlacement()
+  src/lib/shared/clothing-assets.ts       CURRENT_CLOTHING_ASSET_VERSION = 3,
+                                          ClothingBaseType "woman" | "man",
+                                          clothingAssetCharacterId()
+  src/lib/shared/clothing-geometry.ts     DRESSED_GEOMETRY_CONTRACT_VERSION =
+                                          "normalized-v1" (single constant)
+  src/lib/shared/dressed-base-forms.ts    master paths:
+                                          system-reference/base-forms/{woman,man}.png
+
+Server (generation):
+  src/lib/server/ai/base-forms.ts         loadSystemBaseFormDataUrl() — loads the
+                                          master PNG from storage, enforces 1024x1536
+  src/lib/server/ai/jobs/clothing-job.ts  runClothingJob() — AI-ready layer generation
+                                          (prompt lines 77-115), validation, storage
+  src/lib/server/ai/jobs/character-job.ts runCharacterJob() — personal character vs master
+  src/lib/server/ai/openai-images.ts      editImage(), moderateImage(), imageDataUrl()
+  src/lib/server/ai/generation-usage.ts   reserveClothingGeneration()/finish...
+  src/lib/server/ai/background.ts         job clients
+  src/lib/server/ai/job-launcher.ts       launchBackgroundJob()
+
+API routes (src/pages/api/):
+  ai/process-clothing.ts   POST entry point for AI-ready clothing generation
+  ai/personal-model.ts     character generation (sync path)
+  ai/dress-model.ts        server try-on composition route (NO client caller found)
+  ai/try-on.ts             FASHN virtual try-on route (NO client caller found)
+  ai/usage.ts              generation polling
+  wardrobe/items/*         item upload, listing, signed URLs, clean preview
+  wardrobe/outfits/*       outfit persistence (requires normalized-v1 character)
+  characters/[id].ts       character cache gated on geometry contract
+  profile/source-photo.ts  source photo upload
+
+Client (rendering / flows):
+  src/lib/client/wardrobe-ai.ts       processClothingItem(), loadPersistentWardrobe(),
+                                      saveDressedOutfit() ...
+  src/lib/client/profile-outfits.ts   renders saved-outfit layers on profile page
+  src/lib/client/dressed-character.ts character image cache (localStorage)
+  src/lib/client/generation-flow.ts   profile generation UI flow
+  src/pages/wardrobe.astro            THE FITTING ROOM (layer rendering, 183-232)
+  src/pages/profile.astro             upload + "MAKE ... AI READY" (~954, 1487)
+  src/pages/closet.astro              closet grid + outfit selection/save
+
+Styles:
+  src/styles/wardrobe.css  .dressed-canvas (2:3 box) + .dressed-clothing-layer transform
+  src/styles/profile.css   .profile-clothing-layer transform (same math)
+
+Assets:
+  src/assets/system-reference/base-forms/woman.png, man.png  (canonical masters)
+  src/assets/system-reference/clothes/  8 reference/test PNGs (3 UUID-named +
+                                        codesshirt, codestop, longshirt, tshirt,
+                                        tshirtwoman)
+
+Only three AI endpoints are actually called from client code (verified by
+scanning all fetch strings in src/): /api/ai/personal-model,
+/api/ai/process-clothing, /api/ai/usage. dress-model and try-on have no
+in-app caller [C-CODE] — treat them as legacy/parallel paths [U] regarding
+their role in the product.
+
+================================================================================
+4. END-TO-END PIPELINE TRACE
+================================================================================
+Table: every step from photo upload to pixels on screen. "Gate" = what is
+enforced at that step.
+
+ # | Step / owner              | Where (file:line)                       | What happens / gate
+---+---------------------------+------------------------------------------+------------------------------
+1  | Character upload          | profile.astro -> /api/profile/           | photo stored, moderated
+   | (profile)                 | source-photo.ts:59                       | [C-CODE]
+2  | Character generation      | generation-flow.ts -> POST /api/ai/       | editImage([source, masterForm],
+   |                           | personal-model.ts:83,119 ; or background  | 1024x1536. GATE: PNG signature +
+   |                           | job character-job.ts:92-117              | IHDR 1024x1536 only
+   |                           |                                          | (character-job.ts:105-117) [C-CODE]
+3  | Character publish         | character-job.ts:143-150 rpc             | publish_dressed_character sets
+   |                           | publish_dressed_character                | is_primary + geometry_contract_
+   |                           | (migration ...0012:234)                  | version='normalized-v1' [C-CODE]
+4  | Clothing item upload      | profile.astro -> POST /api/wardrobe/     | original PNG stored; moderated
+   |                           | items/index.ts (~416); clean preview at  | (items/index.ts:416); clean preview
+   |                           | items/index.ts:71-73                     | = editImage 1024x1024 with NO master
+   |                           |                                          | form (cosmetic only) [C-CODE]
+5  | "MAKE ... AI READY"       | profile.astro:954-955 ->                 | POST /api/ai/process-clothing with
+   |                           | wardrobe-ai.ts:109-126                   | {id,name,category,baseType,image} [C-CODE]
+6  | Request validation        | process-clothing.ts:281-291              | baseType must be woman|man; primary
+   |                           |                                          | character must exist; contract must be
+   |                           |                                          | 'normalized-v1', else 409 [C-CODE]
+7  | Cache hit / force-regen   | process-clothing.ts:344-356 (dev only)   | if asset exists at CURRENT_CLOTHING_
+   |                           |                                          | ASSET_VERSION=3, return cached [C-CODE]
+8  | Quota + background job    | process-clothing.ts:503 + job-launcher   | reserveClothingGeneration(); HTTP 202;
+   |                           | -> clothing-job.ts:32                    | client polls /api/ai/usage [C-CODE]
+9  | SOURCE of the layer       | clothing-job.ts:51-66                    | downloads user's original garment
+   |                           |                                          | photo from storage [C-CODE]
+10 | GEOMETRY reference        | clothing-job.ts:68 -> base-forms.ts:12-56 | loads CANONICAL master form for
+   |                           |                                          | baseType; hard-fails unless exactly
+   |                           |                                          | 1024x1536 [C-CODE]
+11 | AI generation             | clothing-job.ts:72-116                   | editImage([masterForm, source],
+   |                           |                                          | 1024x1536, transparent; 39-string prompt
+   |                           |                                          | demanding pixel-for-pixel alignment) [C-CODE]
+
+ # | Step / owner              | Where (file:line)                       | What happens / gate
+---+---------------------------+------------------------------------------+------------------------------
+12 | Validation of the output  | clothing-job.ts:118-153                  | GATES: PNG sig, IHDR 1024x1536,
+   |                           |                                          | decodable, alpha has visible AND
+   |                           |                                          | transparent pixels, 4 corners alpha==0.
+   |                           |                                          | NO gate on garment size, position,
+   |                           |                                          | bbox, landmarks or body coverage [C-CODE]
+13 | Character still primary   | clothing-job.ts:155-168                  | re-checks is_primary [C-CODE]
+14 | Persist asset             | clothing-job.ts:170-198                  | storage {userId}/clothing/{characterId}/
+   |                           |                                          | {uuid}.png; upsert wardrobe_item_ai_assets
+   |                           |                                          | (user_id,item_id,base_type) with
+   |                           |                                          | generation_version=3 [C-CODE]
+15 | Closet listing            | closet.astro + items/index.ts:236-311    | aiReadyAssets[base_type] + signed preview
+   |                           |                                          | URLs; "AI READY" badge requires version
+   |                           |                                          | match AND baseType == primary gender [C-CODE]
+16 | Outfit save               | closet.astro -> wardrobe-ai.ts:73 ->     | API requires primary character with
+   |                           | /api/wardrobe/outfits/index.ts:108-112  | normalized-v1 + woman|man [C-CODE]
+17 | Fitting room load         | wardrobe.astro:276-387                   | reads dressed_characters (id,gender,
+   |                           |                                          | model_path,geometry_contract_version);
+   |                           |                                          | blocks legacy contract (302-309); renders
+   |                           |                                          | the PERSONAL CHARACTER image (343-374),
+   |                           |                                          | NOT the master form [C-CODE]
+18 | Layer creation            | wardrobe.astro:199-232                   | per selected item: asset =
+   |                           |                                          | aiReadyAssets[baseType], version must be 3;
+   |                           |                                          | sets --anchor-x/y = dressedAnchor(anchor,
+   |                           |                                          | baseType), --clothing-scale, --clothing-x/y
+   |                           |                                          | [C-CODE]
+19 | CSS placement             | wardrobe.css:640-653                     | transform-origin at (anchor.x,anchor.y);
+   |                           |                                          | translate(--clothing-x/y) THEN scale(
+   |                           |                                          | base_scale * category_scale) [C-CODE]
+20 | Effective transform today | wardrobe.css:648 + clothing-categories    | base_scale = var(--dressed-clothing-scale,
+   |                           | .ts:152 (NEUTRAL)                        | 1) and that variable is NEVER set anywhere
+   |                           |                                          | in src/; category scale = 1.
+   |                           |                                          | => scale(1), translate(0,0): the
+   |                           |                                          | transform is the IDENTITY. Anchors and
+   |                           |                                          | placement vars have ZERO geometric effect
+   |                           |                                          | [C-CODE][C-MEAS analysis §3]
+21 | Profile preview           | profile-outfits.ts:17-44 + profile.css   | same math, identity transform (base
+   |                           | :611-621                                 | scale hard-coded 1) [C-CODE]
+22 | Layer order / z-index     | clothing-categories.ts:51-74;            | socks 5 ... tops 30 ... jackets 40 ...
+   |                           | wardrobe.astro:175-181,221               | z-index = insertion index [C-CODE]
+
+Consequence of step 20: because the compositing transform is the identity,
+the pixels you see are EXACTLY the pixels the AI produced, at their raw
+canvas coordinates, mapped onto a 2:3 box that a 1024x1536 asset fills 1:1
+(object-fit: contain, wardrobe.css:618-626). Fit quality is therefore 100%
+determined by (a) the generated asset's geometry and (b) the rendered
+character's geometry — nothing downstream can correct either. [C-CODE]
+
+================================================================================
+5. THE GEOMETRY CONTRACT (MASTER FORMS, CONTRACT VERSION, GATES)
+================================================================================
+Contract constant:
+  clothing-geometry.ts:1  export const DRESSED_GEOMETRY_CONTRACT_VERSION =
+                           "normalized-v1"  [C-CODE]
+
+Master forms:
+  dressed-base-forms.ts:3-6  woman -> system-reference/base-forms/woman.png
+                             man    -> system-reference/base-forms/man.png  [C-CODE]
+  base-forms.ts:12-56        loads from storage bucket "model-images",
+                             verifies DB row dressed_base_forms.storage_path
+                             matches the expected path, and HARD-FAILS unless
+                             the PNG is exactly 1024x1536 [C-CODE]
+
+Where the contract is enforced:
+  * process-clothing.ts:289-291   refuses generation unless the primary
+    character's geometry_contract_version === "normalized-v1" [C-CODE]
+  * wardrobe/outfits/index.ts:108-112  refuses saving outfits otherwise [C-CODE]
+  * wardrobe/items/index.ts:343-346  primaryCharacterBaseType only exposed for
+    normalized-v1 characters [C-CODE]
+  * characters/[id].ts:80,130    reuse/caching of a character requires the same
+    contract version [C-CODE]
+  * wardrobe.astro:302-309        UI blocks the fitting room for legacy
+    characters with an explicit message [C-CODE]
+  * migration 202610040012:12-17 column default 'normalized-v1', check in
+    ('legacy','normalized-v1'); RPC publish_dressed_character stamps it [C-CODE]
+
+What the contract does NOT include [C-CODE]:
+  * It is a version STRING only. It carries no measured landmarks, no body
+    dimensions, no bounding box — there is no machine-readable body geometry
+    anywhere in the codebase. Master-derived landmark numbers exist only in
+    the analysis/ markdown documents (section 13).
+  * Nothing verifies that a generated character actually matches the master's
+    geometry; character-job.ts:105-117 validates only PNG signature + 1024x1536.
+
+Two distinct AI images use the master as reference:
+  (1) the clothing layer (clothing-job.ts:68-115): [masterForm, sourceGarment]
+  (2) the personal character (character-job.ts:92-104): [userPhoto, masterForm]
+Both must land in the same 1024x1536 coordinate system for overlay to work.
+The fitting room renders (2); the garment was fitted to (the master behind) (1).
+
+================================================================================
+6. THE RENDERING / COMPOSITING MODEL
+================================================================================
+Fitting room container (wardrobe.css:608-626):
+  .dressed-canvas { aspect-ratio: 2/3; width: min(100%, 493.333px) }
+  .dressed-canvas img { position:absolute; inset:0; object-fit:contain }
+  => a 1024x1536 image fills the box exactly 1:1 (both are 2:3). [C-CODE]
+
+Layer transform (wardrobe.css:640-653):
+  --clothing-base-scale: var(--dressed-clothing-scale, 1);          // :648
+  transform-origin: calc(var(--anchor-x,0.5)*100%) calc(var(--anchor-y,0.2)*100%);
+  transform:
+    translate(var(--clothing-x,0%), var(--clothing-y,0%))
+    scale(calc(var(--clothing-base-scale) * var(--clothing-scale,1)));
+
+Variable resolution today [C-CODE]:
+  --dressed-clothing-scale : never set anywhere in src/ -> fallback 1
+  --clothing-scale         : placement.scale = NEUTRAL 1 (all 23 categories)
+  --clothing-x / -y        : placement.x/y = NEUTRAL 0 -> translate(0,0)
+  profile.css:616          : base scale hard-coded 1 (profile preview)
+  => effective transform = identity for every layer in every category.
+
+Math (also proven in analysis/ClothingPlacement-Implementation-Analysis.md §3):
+  scale(1) about origin A maps L -> A + 1*(L-A) = L for every A and L.
+  => transform-origin (the anchor), translate, and scale are ALL no-ops.
+  The browser shows the asset's raw canvas rectangle. [C-MEAS / proof]
+
+Historical context: HEAD~ (commit d973d1b "working solution with size") used
+base scale 0.56, which compressed every garment to 56% of its extent around
+the anchor; analysis/ proves joggers were mathematically impossible under
+0.56 (bottom would need to be at 1990px on a 1536px canvas). The working tree
+changes both CSS files to 1 (uncommitted, see Repository State). [C-MEAS]
+
+Also present but inert: a 7px horizontal offset — body centre of both masters
+is x≈504-505 px vs canvas centre 512 px, so every overlay sits ~0.6% right of
+the drawn body (documented as Problem C in analysis/BestFitAnalyse-Woman.md).
+[C-MEAS]
+
+================================================================================
+7. ANCHOR SYSTEM AND GENDER-SPECIFIC ANCHOR COMPARISON
+================================================================================
+Anchors are body points expressed as canvas fractions (0-1), defined once in
+clothing-categories.ts:86-104 (DRESSED_ANCHORS). Each category maps to one
+anchor via CLOTHING_PLACEMENT (lines 154-177); all categories use
+NEUTRAL = {scale:1, x:0, y:0} (line 152). [C-CODE]
+
+  head 0.10 | face 0.14 | ears 0.14 | neck 0.185 | shoulders 0.22
+  torso 0.27 | waist 0.42 | hips 0.46 | dress 0.20 | knees 0.72
+  ankles 0.91 | feet 0.95 | left-hand (0.33,0.5) | right-hand (0.67,0.5)
+  full-body 0.5
+
+Gender handling [C-CODE]: dressedAnchor(anchor, baseType) (lines 135-143)
+returns the shared value for "woman" or unknown, and for "man" substitutes
+MAN_ANCHOR_Y (lines 122-129): neck 0.17, dress 0.175, shoulders 0.20,
+torso 0.25, waist 0.40, hips 0.44. Knees/ankles/feet/head/face/ears/hands are
+deliberately shared — the code comment (lines 108-121) states both figures
+have the same head top (y≈0.021), the same centre (x≈0.5), and that the man's
+shoulder line sits higher (y≈0.176). [D-INT]
+
+Category -> anchor map: tops/shirts/sweaters -> torso; jackets -> shoulders;
+dresses -> dress; skirts/shorts -> hips; pants -> waist; socks -> ankles;
+shoes -> feet; bags -> right-hand; jewelry/necklaces -> neck; earrings -> ears;
+bracelets/watches -> left-hand; glasses/sunglasses -> face; hats/hair ->
+head; accessories/other -> full-body. [C-CODE]
+
+--------------------------------------------------------------------------------
+Gender-specific anchor comparison (shared vs. override vs. MEASURED)
+--------------------------------------------------------------------------------
+Measured values: this session, silhouette of the master PNGs (section 8) and
+analysis/Phase2-Woman-Tshirt-Test.md §1 for the precise woman landmarks.
+Approximation ±0.01 for line-drawing silhouette rows.
+
+ Anchor     | woman (shared) | man override | measured woman | measured man | verdict
+------------+----------------+--------------+----------------+--------------+---------------------------
+ neck       | 0.185          | 0.17         | ~0.195         | ~0.16        | both plausible; man OK,
+            |                |              | (narrowest)    | (narrowest)  | woman anchor ~15px high
+ shoulders  | 0.22           | 0.20         | 0.2025         | ~0.198-0.208 | man OK; woman shared
+            |                |              | (Phase2)       | (width jump) | anchor ~26px BELOW the
+            |                |              |                |              | shoulder line [C-MEAS]
+ torso      | 0.27           | 0.25         | 0.2702         | ~0.281       | woman exact; man anchor
+            |                |              | (chest)        | (widest chest) | ~30px ABOVE chest
+ waist      | 0.42           | 0.40         | 0.4199         | ~0.42 (no    | woman exact; man figure
+            |                |              | (Phase2)       | strong waist) | is straight-bodied
+ hips       | 0.46           | 0.44         | 0.4603         | ~0.49-0.52   | woman exact; man anchor
+            |                |              | (Phase2)       | (widest)      | ABOVE measured widest
+ dress      | 0.20           | 0.175        | shoulder 0.2025| shoulder~0.198| both sit on shoulder line
+ head/face  | 0.10 / 0.14    | unchanged    | crown 0.021    | crown 0.021  | consistent
+ knees/     | 0.72/0.91/0.95 | unchanged    | agree within   | agree within | code claims ~8% agreement
+ ankles/feet|                |              | ~8%            | ~8%          | [D-INT comment]
+
+Key observations:
+ 1. The shared anchor table was clearly derived from woman.png: four anchors
+    (neck excepted) match the measured woman landmarks to <0.001. [C-MEAS]
+ 2. MAN_ANCHOR_Y compensates measured man/woman differences and is itself
+    documented as measured (comment lines 108-121; analysis/BestFitAnalyse-Man.md
+    §5). [D-INT][C-CODE]
+ 3. TODAY THE WHOLE ANCHOR TABLE IS GEOMETRICALLY INERT: with effective
+    scale(1) + translate(0,0) the transform is the identity (section 6), so
+    anchor accuracy currently changes nothing on screen. It matters only if a
+    non-1 scale is ever re-enabled. [C-CODE]
+ 4. Both renderers set anchors from the SAME table and the SAME baseType
+    (wardrobe.astro:223-229 and profile-outfits.ts:35-40), so wardrobe and
+    profile cannot disagree with each other. [C-CODE]
+
+================================================================================
+8. MEASUREMENT: CANONICAL BASE FORMS
+================================================================================
+Method: %TEMP%\dressed-figure.js (pngjs), figure = pixel whose max channel
+delta from the row's estimated background (16px edge samples) exceeds 22.
+Both files: 1024 x 1536 RGB line drawings on white. [C-MEAS]
+
+8.1 Global extents
+  woman.png  figure bbox x 289-721, y 32-1474  (w 433, h 1443)
+             fractions fx 0.2822-0.7051, fy 0.0208-0.9603, centre x 0.493 (505 px)
+  man.png    figure bbox x 282-726, y 32-1475  (w 445, h 1444)
+             fractions fx 0.2754-0.7100, fy 0.0208-0.9609, centre x 0.492 (504 px)
+  => identical head top (0.021), identical foot bottom (0.960), horizontal
+     centres within 1 px of each other and ~7 px LEFT of canvas centre 512.
+     The man is slightly wider across the shoulders/arms (445 vs 433). [C-MEAS]
+
+8.2 woman.png width profile (fraction y : row width px, centre x)
+  0.198: 169  <- narrowest neck region (c 0.495)
+  0.208: 265 / 0.219: 290 / 0.240: 304  <- shoulder line expands at ~0.203
+  0.281: 311  (chest; centre 0.494)
+  0.4199: 378 (waist, per Phase2 §1)
+  0.4603: 396 (hip, per Phase2 §1)
+  0.521: 432  <- widest (hip/thigh)
+  0.573: 212  <- legs separate (crotch gap appears)
+  0.656-0.667: 154-155 (knee-ish), 0.917: 107 (ankle), 0.958: 79 (feet)
+  Precision landmarks from Phase2 §1 (same file, different method):
+    neck 300px=0.1953 | shoulder 311px=0.2025 (w217) | chest 415px=0.2702 (w307)
+    waist 645px=0.4199 (w378) | hip 707px=0.4603 (w396) | arm-span 768px=0.5000
+
+8.3 man.png width profile (fraction y : row width px)
+  0.156-0.167: 98-105   <- narrowest neck region
+  0.177: 169 / 0.188: 234 / 0.198: 321 / 0.208: 351 / 0.240: 378
+                              <- shoulder line expands between 0.177 and 0.198;
+                                 full shoulder width ~0.198-0.208
+  0.281: 389 (chest), 0.419: 426, 0.521: 443 (widest)
+  0.573: 217 (legs separate), 0.917: 109 (ankle), 0.958: 84 (feet)
+  => the man has a near-straight torso (no waist pinch: 378 -> 443 monotonically)
+     and a wider, higher shoulder shelf than the woman. [C-MEAS]
+
+8.4 Derived per-gender reference regions for garments (top of shoulder -> hip)
+  woman: 0.2025 -> 0.4603  (height 0.2578 = 396 px)
+  man:   ~0.198  -> ~0.52   (approximately; man hip landmark less distinct)
+  These are the regions a "correct" generated top should occupy on the canvas
+  IF the AI obeys the prompt's pixel-for-pixel rule.
+
+8.5 Rendering implication of the 7 px centre offset
+  Both figures are centred at x ~504-505 while the canvas centre is 512;
+  anything generated dead-centre on the canvas sits ~7 px right of the body.
+  Magnitude: 0.6% of width — visible only as a subtle sideways drift. [C-MEAS]
+
+================================================================================
+9. MEASUREMENT: CLOTHING ASSETS
+================================================================================
+9.1 Repository assets (8 files, src/assets/system-reference/clothes/)
+Method: %TEMP%\dressed-clothes.js, extent = alpha > 8 (permissive; includes
+faint haze). All are 1024x1536 RGBA. [C-MEAS]
+
+ asset                 | alpha% | top   | bottom | left  | right | w px | cx
+-----------------------+--------+-------+--------+-------+-------+------+------
+ 04d7f5be-...png (full |  31.9  | 0.107 | 0.949  | 0.284 | 0.721 | 447  | 0.502
+   body garment)       |        |       |        |       |       |      |
+ 5d1e6df1-...png (hip  |  15.9  | 0.316 | 0.660  | 0.203 | 0.797 | 608  | 0.500
+   length, e.g. skirt) |        |       |        |       |       |      |
+ b46171d1-...png (very|  32.8  | 0.135 | 0.813  | 0.043 | 0.958 | 937  | 0.500
+   wide / draped)      |        |       |        |       |       |      |
+ codesshirt.png        |  27.3  | 0.187 | 0.742  | 0.114 | 0.887 | 791  | 0.500
+ codestop.png          |  24.5  | 0.190 | 0.787  | 0.212 | 0.789 | 591  | 0.500
+ longshirt.png         |  19.8  | 0.212 | 0.688  | 0.183 | 0.818 | 651  | 0.500
+ tshirt.png            |  22.3  | 0.181 | 0.656  | 0.128 | 0.872 | 762  | 0.500
+ tshirtwoman.png       |  25.0  | 0.174 | 0.694  | 0.113 | 0.888 | 793  | 0.500
+
+Findings:
+ a) Canvas discipline is good: every asset is 1024x1536 and horizontally
+    centred at cx ~0.500-0.502. The AI respects the canvas/centre rule. [C-MEAS]
+ b) Vertical extent and bbox are HIGHLY VARIABLE between assets: tops start at
+    0.174-0.212 and end at 0.656-0.787; one asset spans 0.107-0.949; widths
+    range 447-937 px. There is no shared "garment box" convention. [C-MEAS]
+ c) Tops are far too long for the master's top region (0.2025 -> 0.4603):
+    tshirtwoman ends at 0.694 vs hip 0.4603 (+358 px, see 9.3). [C-MEAS]
+
+9.2 Previously measured production assets (alpha >= 128 solid bounds)
+Source: analysis/BestFitAnalyse.md §10.6, method: manual zlib decode,
+solid = alpha >= 128, female assets. Master regions derived only from
+woman.png. [C-MEAS]
+
+ asset   | expected top | actual top | expected bottom | actual bottom | height ratio*
+---------+--------------+------------+-----------------+---------------+-------------
+ T-shirt | 0.2025       | 0.1816     | 0.4603          | 0.6549        | 1.84x
+ Jacket  | 0.2025       | 0.1354     | 0.4603          | 0.8125        | 2.63x
+ Skirt   | 0.4199       | 0.3171     | 0.7201          | 0.6595        | 1.14x
+ Joggers | 0.4199       | 0.1074     | 0.9102          | 0.9486        | 1.72x
+ * actual extent / expected extent, both measured on the 1536px canvas.
+
+All four are larger than the master region they should occupy (except the
+skirt's hem). Interpretation in the docs: the model appears to compensate for
+the old 0.56 compression, but inconsistently. [C-MEAS][L-HYP on cause]
+
+9.3 Phase 2 fresh regeneration test (tshirtwoman.png)
+Source: analysis/Phase2-Woman-Tshirt-Test.md — a NEW asset generated through
+the unchanged pipeline (prompt byte-identical since commit 3193b8a). [C-MEAS]
+ solid bbox (alpha>=128): x[116,907] y[269,1064] -> W 792, H 796
+ vs expected (master)   : shoulder 0.2025 (311px) to hip 0.4603 (707px)
+ deltas: top -42 px (too high), bottom +358 px (too low), height 796 vs 396 =
+         **2.01x the correct region**, width 792 vs body 433 = 1.83x
+ centreX 511.5 vs expected 505 = +6.5 px (matches the 7px offset above)
+ Two independent generations (tshirt.png, tshirtwoman.png) landed in the SAME
+ wrong region (tops ~0.175-0.182, bottoms ~0.655-0.694). [C-MEAS]
+
+9.4 Alpha haze
+For tshirtwoman.png: alpha>=1 bounds are 202 px taller and 63 px longer than
+the solid (alpha>=128) bounds (+9.8% W, +33.3% H). Because the repo-level
+measurement in 9.1 used alpha>8, its numbers are close to the SOLID numbers
+for this file (0.174/0.694 vs 0.1751/0.6934) but can be inflated for other
+files with more haze. Haze renders as faint ghost pixels around the garment.
+[C-MEAS]
+
+9.5 Cross-check summary of asset geometry vs. master
+ Statement                                                                  | Tier
+ ----------------------------------------------------------------------------+--------
+ Every asset is 1024x1536 and ~horizontally centred                          | C-MEAS
+ Vertical bboxes vary wildly asset-to-asset (no shared convention)           | C-MEAS
+ Tops measured ~2x taller than the correct master region (two tests)         | C-MEAS
+ Regeneration reproduces the same error region (not a one-off)               | C-MEAS
+ No male clothing asset exists in the repo to repeat any of this for man     | U
+ Server accepts any bbox as long as the format/alpha gates pass              | C-CODE
+
+================================================================================
+10. GENERATION PROMPT AND SERVER-SIDE VALIDATION ANALYSIS
+================================================================================
+10.1 The prompt (clothing-job.ts:77-115, 39 joined strings) [C-CODE][D-INT]
+ Key demands, verbatim-ish:
+  * "the garment must fit this canonical base form's exact body proportions,
+     position, pose, framing, scale ... the output and image 1 align pixel for
+     pixel" (lines 79-81)
+  * "Do not copy, reproduce, edit, or include any pixels from image 1" (82)
+  * "Treat image 2 as a design reference sheet, not a size reference ... Image
+     2's own image size, cropping, or garment bounding box must NEVER determine
+     the final physical size" (88)
+  * per-category normalization instructions incl. SKIRT SIZING (108-109)
+  * priority order and "Return a transparent 1024x1536 PNG with exactly the
+     same canvas, framing, and pixel coordinate system as image 1" (111-112)
+  * "no person pixels whatsoever" (114)
+ The prompt is byte-identical since commit 3193b8a (documented in
+ analysis/BestFitAnalyse.md §12.1 and Phase2 §0). [C-MEAS via git]
+
+10.2 What the server actually validates after generation [C-CODE]
+ clothing-job.ts:
+  118-126  PNG signature + IHDR width==1024 and height==1536
+  128-133  decodable by pngjs
+  134-144  image contains both visible and transparent pixels
+  145-153  all four corner alphas must be exactly 0
+  155-168  primary character unchanged
+ NOT validated: garment bounding box, top/bottom fractions, shoulder/waist/hip
+ alignment, body coverage, garment width, presence of haze, centring, or
+ similarity to any reference. A garment anywhere on the canvas passes. [C-CODE]
+
+10.3 Same gap for the character [C-CODE]
+ character-job.ts:105-117 validates PNG + 1024x1536 only. Nothing checks that
+ the generated character's shoulders/hips/head coincide with the master's.
+ The working tree's uncommitted prompt changes (character-job.ts:27-46) try to
+ solve this linguistically ("MASTER GEOMETRY IS A HARD CONSTRAINT",
+ "CONFLICT RULE: image 2 always wins", "TRANSPLANT RULE"). [C-CODE][D-INT]
+
+10.4 Implication [C-CODE]
+ Fit correctness is delegated entirely to prompt compliance of a diffusion
+ model, at both ends of the overlay (garment layer AND character), with a
+ format-only gate afterwards. Deterministic enforcement points exist at
+ neither generation nor rendering (transform is identity).
+
+================================================================================
+11. WHAT WORKS AND WHAT DOES NOT
+================================================================================
+WORKS (evidence-backed) [C-CODE unless noted]:
+ W1 Canvas discipline of generated layers: always 1024x1536, transparent
+    corners, horizontally centred (C-MEAS 9.1).
+ W2 Master selection: clothing layers and characters are generated against the
+    correct per-gender master, loaded from storage with a hard 1024x1536 check
+    (base-forms.ts:53-55, clothing-job.ts:68, character-job.ts:94).
+ W3 Gender gating end-to-end: baseType must equal the primary character's
+    gender (process-clothing.ts:281-291); assets are keyed by base_type and the
+    UI only shows aiReadyAssets[baseType] (wardrobe.astro:209,
+    profile-outfits.ts:27, items/index.ts:264-267).
+ W4 Legacy geometry is blocked: contract version enforced at generation, outfit
+    save, item listing, character reuse and in the UI (section 5).
+ W5 Anchors match the masters: shared table derived from woman.png matches to
+    <0.001 for torso/waist/hips; MAN_ANCHOR_Y compensates man differences
+    (section 7, C-MEAS).
+ W6 Wardrobe and profile render identically (same anchor source, same math,
+    same identity transform).
+ W7 Layer ordering is deterministic and category-based (z-index/insertion).
+ W8 Compositing transform is now the identity (scale 1) — no more 0.56
+    compression distortion of correct assets (working-tree change, section 6).
+
+DOES NOT WORK (the observed symptom, decomposed):
+ F1 Garment layers are systematically TOO LARGE vertically for the master's
+    body region: tops measured ~2x the correct height in two independent
+    tests (9.2, 9.3) [C-MEAS] — a shirt's hem lands near the knees/thighs.
+ F2 Garment bboxes are inconsistent between assets (9.1): even same-category
+    items span 0.174-0.212 top and 0.656-0.787 bottom, so nothing can be tuned
+    per category [C-MEAS].
+ F3 NOTHING in the pipeline can correct F1/F2 at render time: the transform is
+    the identity, so errors pass through 1:1 (section 6) [C-CODE].
+ F4 NOTHING rejects a bad asset at generation time: validation is format-only
+    (section 10.2) [C-CODE].
+ F5 The character rendered underneath is itself an unvalidated AI product;
+    if it drifts from the master, correctly generated garments would still
+    misfit [C-CODE gap; magnitude UNMEASURED — L-HYP].
+ F6 Small but constant ~7 px horizontal offset (body centre vs canvas centre)
+    [C-MEAS].
+ F7 Alpha haze around garments (faint ghost pixels) [C-MEAS].
+ F8 Male pipeline has zero empirical coverage: no male assets exist to verify
+    man.png + MAN_ANCHOR_Y end-to-end [U].
+
+Mapping symptom -> step: F1/F2/F4 -> step 11/12; F3 -> step 20; F5 -> step 2;
+F6 -> steps 8.5/9.3; F7 -> step 12 gate (haze pixels alpha>0 pass);
+F8 -> data gap.
+
+================================================================================
+12. ROOT CAUSE (STRUCTURED, EVIDENCE-TIERED)
+================================================================================
+12.1 WHAT WORKS (so it can be excluded as the cause)
+  * Canvas size, transparency gates, master loading and per-gender master
+    selection (W1-W2) [C-CODE]
+  * Gender/baseType gating and asset versioning (W3-W4) [C-CODE]
+  * Anchor tables match their masters (W5) [C-MEAS]
+  * Renderers agree with each other (W6) [C-CODE]
+  * The compositing transform no longer distorts (identity, W8) [C-CODE]
+  => The container, the plumbing, the gating and the anchors are NOT the
+     problem. Compositing contributes exactly 0 px of error today.
+
+12.2 WHAT DOES NOT WORK
+  F1-F4 (sections 9, 10, 11): generated garment geometry deviates from the
+  master's body region — systematically too tall (~2x), inconsistently bboxed
+  across assets — and no step in the pipeline either rejects, normalizes, or
+  corrects it. Plus F5 (unvalidated character geometry), F6 (7px), F7 (haze),
+  F8 (no male data).
+
+12.3 STRONGEST EVIDENCE
+  E1 [C-MEAS] tshirtwoman.png regenerated through the UNCHANGED pipeline:
+      solid height 796 px vs the master's correct top region 396 px (2.01x),
+      bottom +358 px below the hip line, top 42 px above the shoulder line
+      (analysis/Phase2-Woman-Tshirt-Test.md §4, §8 P6-P8).
+  E2 [C-MEAS] Repetition: tshirt.png (older) shows the SAME error region
+      (0.1816-0.6549 vs 0.1751-0.6934) — this is a stable model behaviour,
+      not a sample fluke (Phase2 §4.3, §8 P12, §9 O2-O5).
+  E3 [C-MEAS] Variability across the 8 repo assets: top 0.107-0.316,
+      bottom 0.656-0.949, width 447-937 px (section 9.1) — there is no common
+      asset frame to calibrate a constant against.
+  E4 [C-CODE] clothing-job.ts:118-153 validates format and alpha only —
+      nothing geometric — while the prompt (lines 79-81, 112) demands
+      pixel-for-pixel alignment. Intent and enforcement do not meet.
+  E5 [C-CODE] wardrobe.css:640-653 resolves to scale(1)/translate(0,0)
+      (--dressed-clothing-scale never set; NEUTRAL scale 1), so rendering
+      cannot compensate for E1-E3 (section 6; proof in
+      analysis/ClothingPlacement-Implementation-Analysis.md §3).
+  E6 [C-CODE] character-job.ts:105-117: the character — the body actually
+      rendered — is validated for format only.
+
+12.4 MOST LIKELY ROOT CAUSE (primary)
+  [L-HYP, built on C-CODE + C-MEAS]
+  The pipeline delegates ALL geometric correctness of the overlay to
+  natural-language prompting of a diffusion model at BOTH generation sites
+  (garment layer and character), then enforces only file-format invariants
+  and renders with an identity transform. The model reliably honours canvas
+  size and centring but NOT the pixel-for-pixel body registration the prompt
+  demands: garments come out roughly 2x too tall and with an unpredictable
+  bounding box (E1-E3). Because there is no deterministic gate (E4), no
+  normalisation step, and no compensating renderer (E5), every generation
+  error reaches the screen 1:1 — so fit is inconsistent by construction:
+  each regeneration can land differently (F2), and one category that is
+  correct by luck stays correct only by luck.
+  In one sentence: FIT IS NEVER ENFORCED ANYWHERE — it is only requested.
+
+12.5 ALTERNATIVE / CONTRIBUTING HYPOTHESES (ranked)
+  A1 [L-HYP] Character drift: the personal character (rendered body) deviates
+      from the master that the garment was fitted against. Plausible —
+      format-only validation (E6) and a heavily rewritten prompt in the
+      working tree suggest prior attempts to fight exactly this. Magnitude
+      UNMEASURED (no character PNGs in repo). Could alone explain "sometimes
+      fits, sometimes doesn't" across users/characters.
+  A2 [C-MEAS, minor] ~7 px horizontal offset from body centre vs canvas centre.
+  A3 [C-MEAS, minor] Alpha haze creating apparent over-size / ghosting when
+      measurements or eyeballing include faint pixels.
+  A4 [C-CODE, historical] The 0.56 base scale in committed HEAD (d973d1b)
+      compressed garments to 56%; already fixed to 1 in the working tree but
+      NOT committed — deployed builds from HEAD still compress. Verify which
+      build the user observed before accepting this as current.
+  A5 [L-HYP] Category anchors (shoulders 0.22 vs measured 0.2025 for woman)
+      would misplace layers IF any non-1 scale were re-enabled; inert today.
+  A6 [U] Model-side variance per source photo (flat-lay vs worn garment) as an
+      additional driver of F2; only one source per test was available.
+
+12.6 DISCRIMINATING EVIDENCE (what would prove or disprove each candidate)
+  D1 (separates primary cause from A1): download one stored character PNG
+      (dressed_characters.model_path) and measure its shoulder/waist/hip rows
+      against the master (method of section 8).
+      -> if within ~±0.01: character is fine, garment geometry is the sole
+         driver (primary cause confirmed).
+      -> if drifted: both ends are broken; A1 becomes co-primary.
+  D2 (confirms the "no enforcement" mechanism): generate the same garment
+      twice and measure both assets. Primary cause predicts large inter-run
+      variance (E3); if both runs are nearly identical AND correct, the
+      problem lies elsewhere (e.g. rendering, A4 build state).
+  D3 (isolates A4): confirm which build is observed — does the served CSS
+      contain 0.56 or 1? (search built assets for "clothing-base-scale").
+  D4 (isolates A2/A3): overlay one asset on the master in an image editor at
+      1:1 and measure horizontal shift with alpha>=128 bounds only.
+  D5 (male path): generate one male asset through the unchanged pipeline and
+      measure against man.png (currently fully UNKNOWN, F8).
+
+12.7 SMALLEST SAFE CHANGE (recommendation only — NOT implemented)
+  Ranked by (expected fit gain) / (risk):
+  R1 Add a deterministic post-generation geometry gate + normalisation inside
+     clothing-job.ts right after the existing validation (clothing-job.ts:118):
+     compute the solid (alpha >= 128) bbox of the returned layer, compare it
+     with a per-category reference region derived from the master (values in
+     sections 8.4 and analysis/), and either (a) reject and retry, or
+     (b) scale/translate the layer so its shoulder line lands on the master's.
+     This converts "fit requested" into "fit enforced" at the exact point
+     where the error is already measured (E1-E4), touches one file, and does
+     not alter prompts, masters, anchors, CSS or the DB.
+  R2 (smaller still, informational) log/record the measured bbox alongside
+     wardrobe_item_ai_assets so drift is observable per asset.
+  R3 (complementary) apply the same geometric check to characters in
+     character-job.ts (D1) before publish_dressed_character.
+  R4 Commit-or-revert decision for the already-made working-tree changes
+     (scale 0.56 -> 1, dressedAnchor/MAN_ANCHOR_Y) so every environment
+     runs one coherent compositing model (A4).
+  None of these were made in this session.
+
+12.8 DO NOT CHANGE (until the discriminating evidence above exists)
+  * The master PNGs woman.png / man.png — they are the geometry authority and
+    every measured anchor/region derives from them [C-MEAS].
+  * DRESSED_GEOMETRY_CONTRACT_VERSION and the gating in section 5 — they
+    correctly keep legacy bodies out [C-CODE].
+  * The 39-string clothing prompt — it is byte-identical since 3193b8a and is
+    the control variable of every measurement so far; changing it would
+    invalidate the analysis baseline [C-MEAS].
+  * Anchor tables / MAN_ANCHOR_Y / NEUTRAL placement — currently inert (E5);
+    "fixing" them cannot change what is on screen and risks breaking the
+    correct-by-measurement woman anchors [C-MEAS].
+  * Layer order, asset versioning, storage layout — orthogonal to fit.
+  * The current identity transform (scale 1): reintroducing a global scale
+    would recreate the mathematically impossible case proven for joggers in
+    analysis/BestFitAnalyse.md §10.5.
+
+================================================================================
+13. PRIOR ANALYSIS DOCUMENTATION AND DOCUMENTED INTENT
+================================================================================
+analysis/ contains five READ-ONLY documents from earlier sessions. They are
+treated here as [D-INT] (intent) and their measurement tables as [C-MEAS]
+(method stated inside each file):
+
+  BestFitAnalyse.md (36 KB) — root-cause study of the older (0.56) system.
+    Key documented content: master landmarks derived from the master only
+    (§10.3); the scale math A + S(L-A) (§10.4); proof that joggers were
+    impossible under 0.56 (§10.5); asset-vs-master delta table (§10.6);
+    the failure chain master -> anchor -> asset -> compositing (§10.7);
+    the structural contradiction between the prompt's 1:1 rule and a 1.79x
+    compositing scale (§10.8); confirmed facts incl. "0.56 introduced in
+    d973d1b with no derivation in the repo", "prompt byte-identical since
+    3193b8a", "there is no accept/reject step in the system" (§12.1);
+    the Best Fit strategy "original = design authority, master = geometry
+    authority, browser = placement authority" (§13).
+
+  BestFitAnalyse-Woman.md (20 KB) — woman master landmarks, alpha-haze vs
+    solid method, per-asset vertical/horizontal fit, root cause per problem
+    (joggers extent, size vs 0.56, 7px horizontal, hand anchors).
+
+  BestFitAnalyse-Man.md (15 KB) — man master measurement, man generation flow,
+    MAN_ANCHOR_Y derivation, transform chain, and the explicit statement that
+    NO male clothing assets exist ("Unknown – insufficient male clothing
+    asset data", §0/§7.2).
+
+  ClothingPlacement-Implementation-Analysis.md (10 KB) — documents the
+    uncommitted Phase 1 change: exactly two CSS lines 0.56 -> 1, everything
+    else untouched; proves transform becomes identity (§3); lists what the
+    change does NOT fix ("den løser ikke genereringsfejlen" — it does not
+    solve the generation error, §10 NEXT STEP N6).
+
+  Phase2-Woman-Tshirt-Test.md (14 KB) — the fresh-regeneration experiment
+    summarised in section 9.3; conclusions A-E, incl. "C: the primary
+    deviation is vertical, not horizontal" and "D: prompt-only fix is
+    uncertain (X1/X2 unknown)"; next steps T1-T6 (no code changes before
+    more measurement; consider post-generation normalisation — mirrors R1).
+
+  NOTE: analysis/Phase2-Clothing-Asset-Tests.md does not exist (the task
+  brief asked to verify this). The Phase 2 document is the one above.
+
+Intent signals in code comments [D-INT]:
+  * clothing-job.ts:67 "The reusable asset is normalized against the canonical
+    base form for this base type."
+  * clothing-categories.ts:76-85 normalised placement system description;
+    lines 108-121 male anchor derivation from measurements.
+  * wardrobe.css:642-647 "Anchor-based placement ... anchor stays fixed".
+  * process-clothing.ts:45-49, 344-352 dev-only force-regenerate header
+    (explicitly for re-running generation with the current logic).
+
+================================================================================
+14. DATA MODEL, MIGRATIONS AND VERSIONING
+================================================================================
+Migrations (supabase/migrations/) [C-CODE]:
+  202610040001_dressed_ai_wardrobe.sql                    base schema
+  202610040002_character_bound_clothing_assets.sql        assets bound to character
+  202610040005_clothing_previews_and_asset_versions.sql   previews + version column
+  202610040008_clothing_ai_generation_commit.sql          generation commit flow
+  202610040010_base_type_clothing_assets.sql              per-base_type asset rows
+  202610040011_secure_clothing_generation_finalization.sql secure finalization
+  202610040012_normalized_character_geometry_and_saved_outfits.sql
+        adds geometry_contract_version ('legacy' | 'normalized-v1', default
+        normalized-v1), created enforced by check (lines 12-17); creates
+        saved_dressed_outfits; RPC publish_dressed_character stamps
+        'normalized-v1' (line 234); save_dressed_outfit requires a primary
+        normalized-v1 character (line 101).
+  202610040013_add_socks_category.sql                     socks category
+  202610040014_fix_save_dressed_outfit_ambiguity.sql      SQL ambiguity fix,
+        re-states the normalized-v1 requirement (line 55)
+  202610040015_ai_quota_limits_and_owner_exemption.sql     quotas
+  202610040016_background_ai_generation_finalization.sql   background finalization
+  202610050001_clothing_quota_override_test_user.sql       UNTRACKED test-user quota
+
+Versioning constants in code [C-CODE]:
+  CURRENT_CLOTHING_ASSET_VERSION = 3 (clothing-assets.ts:1)
+  DRESSED_GEOMETRY_CONTRACT_VERSION = "normalized-v1" (clothing-geometry.ts:1)
+  Asset rows: wardrobe_item_ai_assets PK (user_id, item_id, base_type),
+    columns reference_path, generation_version, updated_at
+    (clothing-job.ts:185-194).
+  Cache hit rule: existing asset with generation_version == 3 short-circuits
+    regeneration (process-clothing.ts:344-356); forced bypass only in DEV with
+    the x-dressed-force-regenerate header.
+  Character rows: dressed_characters (is_primary, gender, model_path,
+    geometry_contract_version).
+
+Why this matters for fit: version gates ensure old-baseline assets are not
+mixed with new ones, but NOTHING stores or compares geometric metadata
+(no bbox, no landmarks, no character-measurement column anywhere). The DB
+cannot detect a misfitting asset even in principle. [C-CODE]
+
+================================================================================
+15. OPEN QUESTIONS AND DISCRIMINATING EXPERIMENTS
+================================================================================
+Open questions [U], in priority order (see also 12.6 D1-D5):
+  U1 Do generated characters actually match the master's geometry? No
+     character PNG ships in the repo; only format is validated.
+  U2 Is the ~2x-tall garment behaviour stable across categories (jacket,
+     skirt, pants, dress, shoes, socks, accessories) — only tops and a few
+     others were ever measured (4 production + 1 fresh test).
+  U3 Does the male path behave like the female path? Zero male assets exist
+     (analysis/BestFitAnalyse-Man.md §0; repo listing confirms).
+  U4 Is inter-generation variance (E3) driven by the model, the source photo,
+     or both? Only ~2 samples per category exist.
+  U5 Which build does the user actually observe — committed HEAD (0.56) or
+     the working tree (1)? Determines whether A4 is active right now.
+  U6 Is the observed "inconsistent fit" complaint about the fitting room
+     (wardrobe.astro), the profile preview, or both? Both share the math, but
+     they differ in container size (493px vs responsive) — visuals differ
+     without geometric difference.
+  U7 What do /api/ai/dress-model and /api/ai/try-on provide? No client caller
+     was found; if the product intends a photographic try-on (FASHN), it is a
+     separate fit mechanism not covered by this report.
+
+Suggested minimal experiment sequence (no production changes needed):
+  1. D3: check the built CSS for 0.56 vs 1 (establishes the baseline build).
+  2. D1: measure one stored character PNG against its master.
+  3. D2: regenerate one t-shirt twice (dev-only force-regenerate header already
+     exists: process-clothing.ts:45-49) and measure both bboxes.
+  4. Category sweep: measure one asset per category against the master region
+     table (extends Phase2 T3).
+  5. Male test: one male asset (Phase2 T4 / BestFit N5).
+  Only after 1-5 should any of R1-R4 (section 12.7) be implemented.
+
+================================================================================
+16. FILES INSPECTED (APPENDIX)
+================================================================================
+Shared libraries (read in full):
+  src/lib/shared/clothing-categories.ts
+  src/lib/shared/clothing-assets.ts
+  src/lib/shared/clothing-geometry.ts
+  src/lib/shared/dressed-base-forms.ts
+
+Server AI libraries (read in full unless noted):
+  src/lib/server/ai/base-forms.ts
+  src/lib/server/ai/jobs/clothing-job.ts        (incl. prompt 77-115)
+  src/lib/server/ai/jobs/character-job.ts       (prompt + run + validation)
+  src/lib/server/ai/openai-images.ts            (editImage/moderateImage refs)
+  src/lib/server/ai/generation-usage.ts         (reserve/finish refs)
+  src/lib/server/ai/background.ts, job-launcher.ts, config.ts, image-input.ts
+  src/lib/server/ai/fashn-space.ts              (try-on provider, scanned)
+  src/lib/server/ai/try-on.ts / personal-model.ts / dress-model.ts / process-
+  clothing.ts under src/pages/api/ai/ (routes; process-clothing.ts read in
+  depth: validation 281-356, POST flow 400-520)
+
+API routes (scanned / read as referenced):
+  src/pages/api/ai/{process-clothing,personal-model,dress-model,try-on,usage}.ts
+  src/pages/api/wardrobe/items/{index,[id]}.ts
+  src/pages/api/wardrobe/outfits/{index,[id]}.ts
+  src/pages/api/characters/[id].ts
+  src/pages/api/profile/source-photo.ts
+
+Pages (fitting room and flows):
+  src/pages/wardrobe.astro   (93-232 script core, 264-430 load/render)
+  src/pages/profile.astro    (upload/generate/ai-ready flow refs)
+  src/pages/closet.astro     (badge + selection refs)
+  src/pages/index.astro, login.astro, signup.astro (listed, not fit-relevant)
+
+Client libraries:
+  src/lib/client/profile-outfits.ts (full)
+  src/lib/client/wardrobe-ai.ts (1-135 + types; processClothingItem, outfits)
+  src/lib/client/dressed-character.ts, generation-flow.ts, generation-usage.ts
+  (refs)
+
+Styles:
+  src/styles/wardrobe.css  596-680 (canvas + layer transform), 822/867 breakpoints
+  src/styles/profile.css   590-640 (preview canvas + layer transform)
+  src/styles/closet.css, global.css, layout.css, profile-theme.css (listed)
+
+Migrations (all 12 files listed in section 14; 0012 read in depth for
+geometry_contract_version + saved outfits; 0014 read for the save fix):
+  supabase/migrations/202610040001..0016 + 202610050001 (12 files)
+
+Assets (measured this session):
+  src/assets/system-reference/base-forms/woman.png
+  src/assets/system-reference/base-forms/man.png
+  src/assets/system-reference/clothes/{04d7f5be-..., 5d1e6df1-...,
+    b46171d1-..., codesshirt, codestop, longshirt, tshirt, tshirtwoman}.png
+
+Analysis documents (read; sections/tables cited):
+  analysis/BestFitAnalyse.md
+  analysis/BestFitAnalyse-Woman.md
+  analysis/BestFitAnalyse-Man.md
+  analysis/ClothingPlacement-Implementation-Analysis.md (full)
+  analysis/Phase2-Woman-Tshirt-Test.md (full)
+
+Measurement tooling (created outside the project, in %TEMP%):
+  dressed-figure.js   silhouette + row profile of base forms
+  dressed-clothes.js  alpha bbox + row extents of clothing assets
+  dressed-measure.js  alpha/ink bbox + 32-row profile
+  dressed-sample.js   corner/colour histogram diagnostics
+  (earlier sessions: %TEMP%\p2test.js per Phase2 §12 — no longer present)
+
+Repository inspection commands: git status/log/branch/diff --numstat,
+recursive listings of src/lib, src/pages, src/styles, supabase/migrations,
+analysis/, and both asset directories; fetch-string scan for client API calls.
+
+--------------------------------------------------------------------------------
+END OF REPORT
+No production file was modified. This document is the only artefact added.
+--------------------------------------------------------------------------------
+
+
+
+
+
+
+
+
+
+
+
+
+

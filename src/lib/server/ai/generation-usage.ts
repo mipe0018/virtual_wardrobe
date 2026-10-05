@@ -135,3 +135,46 @@ export async function finishGeneration(
     console.error(`Could not release the ${type} generation lock.`, error);
   }
 }
+
+// Service-role finalization for character/tryon generations run by a background job.
+// A failed generation credits back the reserved use.
+export async function finishGenerationServer(
+  serviceClient: SupabaseClient,
+  userId: string,
+  type: "character" | "tryon",
+  reservationStartedAt: string,
+  succeeded: boolean
+): Promise<boolean> {
+  const { data, error } = await serviceClient.rpc("finish_ai_generation_server", {
+    p_user_id: userId,
+    p_generation_type: type,
+    p_reservation_started_at: reservationStartedAt,
+    p_succeeded: succeeded,
+  });
+  if (error) {
+    console.error(`Could not finalize the ${type} generation reservation.`, error);
+    return false;
+  }
+  return data === true;
+}
+
+// Reads the token of the reservation that was just created (the lock is held, so it is
+// the caller's own reservation).
+export async function readReservationToken(
+  serviceClient: SupabaseClient,
+  userId: string,
+  type: GenerationType
+): Promise<string | null> {
+  const { data, error } = await serviceClient
+    .from("ai_generation_usage")
+    .select("started_at")
+    .eq("user_id", userId)
+    .eq("generation_type", type)
+    .eq("in_progress", true)
+    .maybeSingle<{ started_at: string | null }>();
+  if (error) {
+    console.error(`Could not read the ${type} reservation token.`, error);
+    return null;
+  }
+  return data?.started_at ?? null;
+}

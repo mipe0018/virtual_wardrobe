@@ -65,6 +65,18 @@ export const POST: APIRoute = async ({ request }) => {
     return errorResponse("Could not check the source photo. Please try again.", 502);
   }
 
+  // Read the currently active source photo before uploading its replacement. The old file is
+  // only removed later, once the database update has succeeded.
+  const { data: previousProfile, error: previousLookupError } = await client
+    .from("profiles")
+    .select("source_photo_path")
+    .eq("user_id", user.id)
+    .maybeSingle<{ source_photo_path: string | null }>();
+  if (previousLookupError) {
+    console.error("Could not read the source photo this upload replaces.", previousLookupError);
+  }
+  const previousSourcePhotoPath = previousProfile?.source_photo_path ?? null;
+
   const path = `${user.id}/source-photo-${crypto.randomUUID()}.${imageExtension(mimeType)}`;
   const { error: uploadError } = await client.storage
     .from("profile-images")
@@ -85,6 +97,22 @@ export const POST: APIRoute = async ({ request }) => {
     const { error: cleanupError } = await client.storage.from("profile-images").remove([path]);
     if (cleanupError) console.error("Could not remove unlinked source photo.", cleanupError);
     return errorResponse("Could not save your photo to your profile.", 500);
+  }
+
+  // The replacement is persisted, so the previous source photo is now unreferenced. Removal
+  // happens only here — never before the update succeeded — and a failure here is non-fatal,
+  // because the new source photo is already the active one.
+  if (previousSourcePhotoPath && previousSourcePhotoPath !== path) {
+    if (!previousSourcePhotoPath.startsWith(`${user.id}/`)) {
+      console.error("Skipped removing a replaced source photo outside the user's folder.");
+    } else {
+      const { error: replacedRemovalError } = await client.storage
+        .from("profile-images")
+        .remove([previousSourcePhotoPath]);
+      if (replacedRemovalError) {
+        console.error("Could not remove the replaced source photo.", replacedRemovalError);
+      }
+    }
   }
 
   return Response.json(

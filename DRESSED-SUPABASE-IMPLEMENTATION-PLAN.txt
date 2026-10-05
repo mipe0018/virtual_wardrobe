@@ -1,0 +1,1130 @@
+================================================================================
+DRESSED — SUPABASE IMPLEMENTATION PLAN (PLANNING ONLY)
+Account deletion, generated-asset retention, 7-day email restriction
+================================================================================
+
+Repository : https://github.com/mipe0018/DRESSED-DUH.git
+Branch     : clothes (HEAD b9a94ca)
+Date       : 2026-10-05
+Status     : PLAN ONLY — no SQL run, no migrations created, no tables, RLS,
+             storage, auth, code or data touched. This file is the only
+             artefact added. Implementation awaits separate approval.
+
+Basis      : DRESSED-SUPABASE-ANALYSIS.txt (read-only audit of the same
+             working tree; section references below point at that audit).
+Evidence   : claims about CURRENT state carry the audit's tiers
+             [CONFIRMED BY CODE] / [CONFIRMED BY MIGRATION] /
+             [UNKNOWN (live DB)] — nothing in this plan assumes facts the
+             audit marked UNKNOWN without re-verifying them in step M0.
+
+--------------------------------------------------------------------------------
+TABLE OF CONTENTS (17 sections)
+--------------------------------------------------------------------------------
+ 1. CURRENT ARCHITECTURE          10. RLS AND SECURITY
+ 2. CURRENT PROBLEMS              11. EXISTING USER MIGRATION
+ 3. TARGET ARCHITECTURE           12. MIGRATION PLAN
+ 4. AUTH AND LOGIN                13. BACKFILL PLAN
+ 5. USER DATA                     14. TEST PLAN
+ 6. ACCOUNT DELETION              15. RISKS
+ 7. GENERATED ASSET RETENTION     16. EXACT CHANGES TO IMPLEMENT
+ 8. 7-DAY EMAIL RESTRICTION       17. FUNCTIONALITY THAT MUST
+ 9. STORAGE                          REMAIN UNCHANGED
+
+================================================================================
+1. CURRENT ARCHITECTURE
+================================================================================
+[Condensed from the audit; tiers repeated where a claim is load-bearing]
+
+IDENTITY
+  - Supabase Auth only. signup.astro:149-158 calls
+    supabase.auth.signUp({email, password, options.data:{name, gender}});
+    login.astro:128 uses signInWithPassword. Passwords live ONLY in
+    auth.users. [CONFIRMED BY CODE]
+  - auth.uid() is the single user id used by every application table and by
+    every storage path prefix `{uid}/...`. [CONFIRMED BY CODE/MIGRATION]
+  - profiles is created CLIENT-SIDE on first profile load
+    (profile.astro:633-646, insert-if-missing) and mirrors name/gender from
+    auth metadata; its table definition and RLS predate the repository
+    [UNKNOWN — live DB]. [CONFIRMED BY CODE]
+
+DATA (all keyed user_id -> auth.users ON DELETE CASCADE)
+  dressed_characters, wardrobe_items, wardrobe_results,
+  wardrobe_item_ai_assets (PK user,item,base_type — the "reusable clothing
+  asset"), wardrobe_item_ai_assets_legacy (transitive cascade),
+  saved_dressed_outfits (transitive via character), ai_generation_usage,
+  ai_generation_limit_overrides. profiles: FK status UNKNOWN. [CONFIRMED BY
+  MIGRATION]
+
+STORAGE
+  Two private buckets. profile-images/{uid}/source-photo-* ; model-images/
+  {uid}/personal-model-*, clothing-originals/, clothing-previews/,
+  clothing/{characterId}/, wardrobe-results/, try-on-* ; plus shared
+  system-reference/base-forms/. Deletion is 100% application-initiated;
+  SQL cascades never touch files. [CONFIRMED BY CODE]
+
+RLS
+  Per-row auth.uid() policies + SECURITY DEFINER RPCs for privileged
+  writes; deny-all on ai_generation_limit_overrides; user-folder storage
+  policies live outside the repo [UNKNOWN]. [CONFIRMED BY MIGRATION]
+
+================================================================================
+2. CURRENT PROBLEMS (relevant to this plan)
+================================================================================
+ P1. NO ACCOUNT DELETION EXISTS AT ALL — no endpoint deletes a profile or
+     an auth user; there is no product way to leave the service.
+     [CONFIRMED BY CODE — audit F01]
+ P2. PROFILE DELETION != ACCOUNT DELETION — deleting only the profiles row
+     leaves auth.users, so the email stays registered forever and signup
+     fails with user_already_exists (the reported bug).
+     [CONFIRMED BY CODE — audit 1.7/F27]
+ P3. STORAGE ORPHANS — an auth.users delete cascades every row but leaves
+     every file in both buckets (audit 4.1); other orphan classes:
+     character-folder leftovers (F04), crash-between-upload-and-write
+     (F34), failed storage.remove() (F35).
+ P4. NO RETENTION CONCEPT — rows and files are one coupled unit today:
+     cascade-deleting a user would destroy generated character images and
+     clothing assets along with private data. [CONFIRMED BY CODE]
+ P5. NO EMAIL COOLDOWN — nothing records deleted emails; after any future
+     deletion the email would be immediately reusable. [CONFIRMED BY CODE]
+ P6. UNKNOWN LIVE PIECES — profiles DDL/RLS, user-folder storage policies
+     and the missing migrations 0003/0004/0006/0007/0009 are outside the
+     repo (audit F36-F39/F19). Must be verified before schema work (M0).
+ P7. CLIENT-HOLD DELETE on wardrobe_item_ai_assets can orphan files if
+     ever exercised (audit 12.4/F08). [CONFIRMED BY CODE]
+
+================================================================================
+3. TARGET ARCHITECTURE
+================================================================================
+Two clearly separated zones, connected only by an opaque deletion id:
+
+  ZONE A — ACTIVE (belongs to a live auth user)
+  auth.users (identity: email + password, Supabase-managed)
+    └── profiles 1:1 (FK -> auth.users ON DELETE CASCADE, verified in M0/M1)
+          └── dressed_characters ── model_path ──> {uid}/personal-model-*.png
+          └── wardrobe_items ── original/preview paths (ACTIVE files)
+                └── wardrobe_item_ai_assets (reusable, base_type keyed)
+          └── saved_dressed_outfits, wardrobe_results, ai_generation_usage
+          RLS: auth.uid() = user_id everywhere; storage under `{uid}/` only.
+
+  ZONE B — RETAINED (exists only after account deletion; NO identity)
+  account_deletions (deletion_id, source uid, phase, timestamps)
+    ├── retained_wardrobe_items (deletion_id, item_id, category)
+    └── retained_assets (deletion_id, kind, base_type, generation_version,
+                         source_path, retained_path, retained_at)
+          └── storage: model-images/retained/{deletion_id}/...
+  RLS: enabled with ZERO policies (deny-all) for anon+authenticated;
+  service_role only. No user_id, no email, no name in Zone B.
+
+  ZONE C — COOLDOWN (enforcement only)
+  deleted_emails (email_digest PK, deleted_at, available_at, deletion_id)
+  + a SECURITY DEFINER BEFORE INSERT/UPDATE trigger on auth.users.
+  Deny-all RLS; readable only inside the trigger function.
+
+Flow:  account deletion = copy what must be preserved (A -> B), record the
+       cooldown (C), delete the auth user (cascades A), sweep `{uid}/`
+       storage. The email returns to service after available_at, creating a
+       FRESH Zone A under a brand-new uid — never re-linked to Zone B.
+
+Design choice (options compared in sections 6 and 8):
+  RECOMMENDED = hard-delete auth.users at deletion time + DB-side cooldown
+  table/trigger for the 7-day block + detached retention snapshot.
+  Rejected alternatives: (i) soft-delete shell user kept forever, (ii)
+  cron-based delayed auth delete, (iii) in-place nullable-owner retention
+  columns, (iv) frontend-only email blocking. Reasons in sections 6/8.
+
+================================================================================
+4. AUTH AND LOGIN
+================================================================================
+ - Supabase Auth remains the ONLY authentication system. Email is the login
+   identity; passwords remain exclusively in auth.users — never copied to
+   profiles or any DRESSED table. [unchanged — CONFIRMED BY CODE]
+ - Existing signup/login/logout flows (signup.astro, login.astro,
+   session handling, authenticateSupabaseRequest Bearer validation) are
+   NOT modified. No new identity table, no second login path, no
+   parallel user id. [requirement: existing login/signup preserved]
+ - auth.uid() stays the single foreign key used by every DRESSED table.
+ - profiles stays the 1:1 application profile. Target change (M1): ensure
+   profiles.user_id has a verified FK -> auth.users(id) ON DELETE CASCADE
+   and a uniqueness guarantee on user_id, with the definition captured in
+   version control. M0 first verifies what the live schema actually has
+   [UNKNOWN — audit F37]; if the FK already exists, M1 becomes a no-op
+   guard migration. Profile CREATION stays client-side insert-if-missing
+   (profile.astro:633-646) — it works today and changing it is not
+   required by any requirement; an optional AFTER INSERT trigger on
+   auth.users (idempotent, ON CONFLICT DO NOTHING) is listed in section 16
+   as OPTIONAL hardening only.
+ - New users: signUp(email, password, metadata) -> auth row -> cooldown
+   trigger check (section 8, passes for everyone except recent deletions)
+   -> profile created on first /profile visit. Nothing else changes.
+ - Existing users: zero change — same uid, same profile, same sessions,
+   same login. No migration touches auth.users rows.
+ - Account deletion (new) runs server-side with the service role and ends
+   with auth.admin.deleteUser(uid): the user can no longer log in, refresh
+   tokens die with the user row, and any still-live access token expires
+   within Supabase's short JWT lifetime (see risk R6).
+
+================================================================================
+5. USER DATA
+================================================================================
+Layout principle (unchanged, just made explicit):
+  - Identity data  : auth.users only (email, password hash, metadata).
+  - Active data    : every DRESSED row keyed user_id -> auth.uid();
+    every storage file under `{uid}/`. RLS `auth.uid() = user_id`.
+  - Retained data  : detached rows keyed deletion_id (section 7); files
+    under `retained/{deletion_id}/`. No identity fields at all.
+  - Cooldown data  : hashed email + timestamps (section 8).
+
+Ownership rules that stay exactly as today:
+  - wardrobe_items / assets / characters / outfits / results / usage:
+    owned directly by the user, cascade on auth delete (audit 4.1).
+  - saved outfits and legacy assets: owned transitively via character/item.
+  - system-reference base forms and ai_generation_limits: platform-global.
+
+No parallel or competing identities are created:
+  - Zone B rows have NO user_id and NO email — they cannot be read by, or
+    attributed to, any account, including a future account that reuses the
+    same email. After 7 days the email produces a NEW uid with an EMPTY
+    Zone A; the old generated assets stay invisible in Zone B.
+  - account_deletions keeps the old source uid ONLY as an opaque retry
+    handle for the storage sweep (uuid without email/name); it is
+    deny-all to clients (section 10).
+
+================================================================================
+6. ACCOUNT DELETION
+================================================================================
+Requirement: active profile removed/deactivated, user loses access to the
+old private account, AI-generated images preserved, no cascade-destroy of
+generated assets, no orphaned storage.
+
+6.1 OPTIONS COMPARED (decision record)
+
+ OPTION A — Hard delete + detached retention (RECOMMENDED)
+   Delete auth.users via admin API AFTER snapshotting generated assets
+   into Zone B; sweep `{uid}/` storage; block the email 7 days with a DB
+   trigger (section 8).
+   + No shell auth rows; no cron; email lifecycle controlled by our own
+     DB; PII removed (profile, source photo, name, metadata die with the
+     auth row); retained assets provably unreachable by anyone.
+   - Requires explicit copy steps (rows + files) before deletion.
+   - Supabase's native email uniqueness disappears with the row, so the
+     7-day rule MUST be enforced by us — it is, inside the database.
+
+ OPTION B — Soft-delete shell user (disabled, email anonymised, kept)
+   + Retention free (FKs intact; no copying).
+   - Leaves disabled auth rows forever (explicitly undesirable); needs
+     manual PII scrubbing; still needs OUR cooldown table because the
+     anonymised email frees the original immediately (native uniqueness
+     does NOT span the 7-day window); active session revocation required.
+
+ OPTION C — Delayed delete (keep auth row 7 days; cron deletes at D+7)
+   + Native uniqueness blocks signup during the window.
+   - Cron dependency: a missed run recreates the permanent "user already
+     exists" bug (audit F27); account stays alive for 7 days unless
+     separately disabled (extra moving parts); no standalone source of
+     truth for the cooldown.
+
+ OPTION D — In-place retention (nullable user_id / SET NULL FKs)
+   - Breaks NOT NULL columns and composite PKs
+     (user_id,item_id,base_type); forces RLS + query rewrites app-wide;
+     mixes active and retained rows in one table. Rejected as least-safe.
+
+ => RECOMMENDATION: OPTION A — the only option satisfying ALL
+    requirements at once (immediate access loss, no lingering auth users,
+    guaranteed non-cron 7-day blocking, PII minimisation, explicit
+    retention) with purely ADDITIVE schema changes (trivial rollback).
+
+6.2 THE DELETION FLOW (server-side, service role; phased & idempotent)
+ New endpoint: POST /api/account/delete (authenticated user).
+ New orchestrator: src/lib/server/account-deletion.ts.
+ Every phase is recorded in account_deletions.phase so a crash can be
+ retried safely (re-running a done phase is a no-op).
+
+ P0 VERIFY  - valid Bearer session + password re-entry confirmed with
+              signInWithPassword server-side; otherwise reject.
+ P1 LEDGER  - INSERT account_deletions(source_user_id=uid,
+              phase='initiated') [reuses an earlier failed attempt].
+ P2 RETAIN  - COPY (never move): rows -> Zone B (matrix, section 7);
+              files -> model-images/retained/{deletion_id}/...;
+              verify every retained file exists + row counts match.
+            -> phase='retained'. ANY mismatch aborts: nothing deleted.
+ P3 COOLDOWN - INSERT deleted_emails(digest(lower(email)),
+              available_at = now() + 7 days, deletion_id)
+            -> phase='cooldown_set'. Deliberately BEFORE the auth delete:
+              a crash here leaves a live user whose email is additionally
+              cooldown-blocked — safe and retryable (Supabase already
+              blocks signups while the auth row exists).
+ P4 DELETE  - service client auth.admin.deleteUser(uid) -> cascades every
+              application row (audit 4.1); profiles deleted explicitly
+              first IF M0/M1 shows no FK.
+            -> phase='auth_deleted'. Login impossible from here; refresh
+              tokens die with the user row.
+ P5 SWEEP   - list + remove ALL objects under `{uid}/` in BOTH buckets
+              (paginated, idempotent): source photo, originals, previews,
+              models, assets, results — Zone B holds copies. Defensive
+              reverse-lookup first (audit 18 hard rule): if any remaining
+              DB row still references a path, skip it and phase='failed'.
+            -> phase='storage_swept'.
+ P6 VERIFY  - storage objects under `{uid}/` == 0 in both buckets;
+              retained file count == expected; cooldown row present.
+            -> phase='verified', completed_at=now().
+
+ ROLLBACK BOUNDARY: before P4 the deletion can be cancelled (delete the
+ cooldown row, mark account_deletions 'cancelled'; user still logged in).
+ After P4 the ACCOUNT is irreversibly gone (by design); only Zone B can be
+ purged later via the admin path (risk R8).
+
+6.3 WHAT HAPPENS TO EACH ENTITY ON DELETION
+  profiles row                    -> deleted (cascade or explicit) [active]
+  dressed_characters rows         -> cascade; model FILES copied to Zone B
+  wardrobe_items rows             -> cascade; original+preview files swept;
+                                     preview FILE copied to Zone B
+  wardrobe_item_ai_assets rows    -> cascade; asset FILES copied to Zone B
+  wardrobe_item_ai_assets_legacy  -> cascade; FILES copied
+  saved_dressed_outfits rows      -> cascade (no files)
+  wardrobe_results rows           -> cascade; FILES copied
+  FASHN try-on files (no row)     -> copied via storage listing, then swept
+  ai_generation_usage / overrides -> cascade (counters meaningless without
+                                     the account — deliberately NOT retained)
+  source photo / clothing originals -> deleted, never retained (user uploads)
+
+================================================================================
+7. GENERATED ASSET RETENTION
+================================================================================
+7.1 RETENTION MATRIX (what survives, what does not)
+  ARTIFACT                            | SOURCE (row/path)             | KEEP
+  ------------------------------------+-------------------------------+------
+  generated character/model image     | dressed_characters.model_path | YES
+  AI-ready clothing asset (current)   | wardrobe_item_ai_assets       | YES
+                                      |  .reference_path + gen_version|
+  legacy character-bound asset        | ..._legacy.reference_path     | YES
+  AI clean clothing preview           | wardrobe_items.preview_path   | YES
+  dress-model result image            | wardrobe_results.result_path  | YES
+  FASHN try-on file (storage only)    | {uid}/try-on-* (by listing)   | YES
+  clothing ORIGINAL upload            | wardrobe_items.original_path  | NO
+  profile source photo                | profiles.source_photo_path    | NO
+  quota counters, sessions, profile   | usage/profile rows            | NO
+  saved outfit rows (user-authored)   | saved_dressed_outfits         | NO*
+
+  *Saved outfits are user metadata, not generated images; excluding them
+   keeps retention strictly to AI outputs and avoids retaining user text.
+   Documented decision — can be added later without redesign (16.x).
+
+7.2 ZONE B TABLES (exact design; account_deletions created by migration M2,
+    the retained_* tables created EMPTY by migration M3)
+
+  public.account_deletions
+    deletion_id     uuid PK default gen_random_uuid()
+    source_user_id  uuid NOT NULL   -- opaque retry handle; NO FK (must
+                                    -- survive the auth.users delete)
+    phase           text NOT NULL default 'initiated'
+                    CHECK IN ('initiated','retained','cooldown_set',
+                              'auth_deleted','storage_swept','verified',
+                              'failed','cancelled')
+    error           text NULL
+    started_at      timestamptz NOT NULL default now()
+    completed_at    timestamptz NULL
+    retained_count  integer NULL
+
+  public.retained_wardrobe_items
+    deletion_id  uuid NOT NULL REFERENCES account_deletions
+                 ON DELETE CASCADE
+    item_id      text NOT NULL      -- original wardrobe_items.id value
+    category     text NULL          -- category kept; item NAME dropped
+    created_at   timestamptz NULL
+    PRIMARY KEY (deletion_id, item_id)
+
+  public.retained_assets
+    id                 uuid PK default gen_random_uuid()
+    deletion_id        uuid NOT NULL REFERENCES account_deletions
+                       ON DELETE CASCADE
+    item_id            text NULL    -- soft link to retained item
+    kind               text NOT NULL CHECK IN ('character_model',
+                       'clothing_asset','legacy_clothing_asset',
+                       'clothing_preview','dress_result','tryon_result')
+    base_type          text NULL CHECK IN ('woman','man')
+    category           text NULL
+    generation_version integer NULL
+    source_path        text NOT NULL  -- original path (audit trail)
+    retained_path      text NOT NULL UNIQUE
+                       -- always under retained/{deletion_id}/
+    source_created_at  timestamptz NULL
+    retained_at        timestamptz NOT NULL default now()
+    UNIQUE (deletion_id, source_path)
+  [composite FK (deletion_id,item_id) -> retained_wardrobe_items optional;
+   added only where item_id is set — keeps Zone B self-consistent]
+
+  FIELDS DELIBERATELY ABSENT: user_id, email, name, photo metadata,
+  character names. Zone B holds only the technical metadata needed to
+  interpret a retained image. [PII minimisation + clear separation]
+
+7.3 OWNERSHIP AFTER ACCOUNT DELETION (explicit answer)
+  - Retained assets are owned by THE PLATFORM under a product/legal
+    retention decision, referenced ONLY by deletion_id. No user — living
+    or future — owns, reads or links them: RLS deny-all, service-role
+    access only (section 10), and application code NEVER mints a signed
+    URL for any retained_path.
+  - The old uid keeps NO reference: source_user_id exists only inside
+    account_deletions as an opaque retry/audit handle; it is invisible to
+    all clients and carries no email/name.
+  - A future account re-using the email receives a NEW uid and an EMPTY
+    Zone A. There is deliberately no join from any identity to Zone B —
+    retention and identity are permanently decoupled.
+  - Erasure path: service role may delete account_deletions (cascades all
+    retained rows) + the retained files — documented as the admin/legal
+    purge mechanism (risk R8).
+
+================================================================================
+8. 7-DAY EMAIL RESTRICTION
+================================================================================
+Requirement: after account deletion the same email cannot sign up for 7
+days; afterwards it can; enforcement server/database-side, not frontend;
+no lingering active auth users; no bypass path.
+
+8.1 WHY SUPABASE'S NATIVE UNIQUENESS IS NOT ENOUGH
+  Supabase/GoTrue enforces email uniqueness only WHILE a row exists in
+  auth.users. Our deletion removes that row (requirement: no lingering
+  auth users), so from T+0 the email is natively free — the 7-day window
+  must be enforced by an additional bypass-proof database mechanism.
+  [CONFIRMED BY CODE: signup uniqueness today comes solely from
+  auth.users — audit 1.7]
+
+8.2 OPTIONS COMPARED
+  (a) BEFORE INSERT trigger on auth.users (RECOMMENDED)
+      A SECURITY DEFINER function raises an exception when the new email's
+      digest is found in deleted_emails with available_at > now().
+      + Lives in the same database that receives EVERY signup path
+        (password, OAuth, admin createUser all INSERT into auth.users) —
+        no client can bypass it; no cron; no plan/infra dependency.
+        Triggers on auth.users are the standard Supabase pattern (e.g.
+        handle_new_user); privileges must be validated on staging (M0,
+        audit F37).
+      - The exception surfaces to the client as a generic GoTrue error;
+        a UX pre-check provides friendly copy (8.4).
+  (b) Supabase Auth Hook "Before User Created" (HTTP hook)
+      + First-class feature; friendly rejection payloads.
+      - Needs plan availability + an extra endpoint + fail-open/closed
+        decisions — more moving parts. FALLBACK if (a) is impossible.
+  (c) App-level signup endpoint checking the table then calling
+      admin.createUser
+      - The public GoTrue password-signup endpoint stays open, so direct
+        API calls bypass it. REJECTED as sole enforcement; OK only as UX
+        pre-check layer.
+  (d) Frontend-only check — forbidden by requirement, trivially
+      bypassable. REJECTED.
+
+  => RECOMMENDATION: (a) authoritative; (c) optional UX pre-check;
+     (b) documented fallback.
+
+8.3 THE MECHANISM (exact objects; created by migration M2, which also
+  creates account_deletions because deleted_emails references it)
+
+  public.deleted_emails
+    email_digest   text PK            -- hex sha256 of lower(btrim(email))
+    deleted_at     timestamptz NOT NULL default now()
+    available_at   timestamptz NOT NULL   -- deleted_at + interval '7 days'
+    deletion_id    uuid NULL REFERENCES account_deletions(deletion_id)
+    -- RLS enabled, ZERO policies; revoke all from anon+authenticated;
+    -- service_role SELECT only (audit 12.9 deny-all pattern)
+
+  public.dressed_email_digest(p_email text) returns text
+    -- IMMUTABLE: encode(sha256(lower(btrim(p_email))), 'hex')
+    -- digest (not raw email) keeps the cooldown table free of readable
+    -- PII; the table is deny-all to clients anyway (decision 15.R5).
+
+  public.enforce_email_cooldown() returns trigger
+    -- SECURITY DEFINER, set search_path = ''
+    -- IF EXISTS (SELECT 1 FROM public.deleted_emails
+    --            WHERE email_digest = dressed_email_digest(NEW.email)
+    --              AND available_at > now())
+    -- THEN RAISE EXCEPTION
+    --   'This email was used to delete a DRESSED account and is
+    --    temporarily unavailable for new signups.'
+    -- EXECUTE revoked from public/anon/authenticated.
+
+  Triggers (BOTH required — signup AND later email change):
+    trg_email_cooldown_insert  BEFORE INSERT ON auth.users
+      FOR EACH ROW EXECUTE FUNCTION enforce_email_cooldown();
+    trg_email_cooldown_update  BEFORE UPDATE OF email ON auth.users
+      FOR EACH ROW EXECUTE FUNCTION enforce_email_cooldown();
+
+  Row lifecycle: NO cron. The check compares now() against available_at;
+  after 7 days the trigger simply allows the insert. Stale rows with
+  available_at in the past are inert (optional later purge job).
+
+8.4 END-TO-END TIMELINE
+  T+0      deletion P3 inserts the cooldown row (available_at = T+7d),
+           P4 deletes the auth user, P5 sweeps storage.
+           Signup with same email -> GoTrue INSERTs -> trigger raises ->
+           BLOCKED server-side. Old login -> user not found -> BLOCKED.
+  T+6d23h  signup -> still blocked (available_at not passed).
+  T+7d+    signup -> trigger passes -> NEW auth user (brand-new uid) ->
+           normal profile flow; Zone A empty; Zone B unreachable. Email
+           fully usable again.
+  UX copy: optional GET /api/account/signup-status?email=... calling
+           SECURITY DEFINER signup_email_status(email) returning
+           {blocked, available_at} ONLY for cooldown hits (never reveals
+           whether a live account exists) so signup.astro can show
+           "This email is locked until <date>". Presentation only —
+           enforcement stays in the trigger.
+
+8.5 EDGE CASES HANDLED
+  - Case/whitespace: digest normalises lower+trim; GoTrue normalises too.
+  - Crash after P3 before P4: user still active; retry resumes (P3
+    idempotent). The extra cooldown is harmless (Supabase already blocks
+    signups while the auth row exists).
+  - Crash after P4 before P5: account gone, cooldown set; storage swept on
+    retry via account_deletions.phase.
+  - Concurrent double deletion: ledger upsert; run is idempotent.
+  - OAuth signup with the same email during the window also INSERTs into
+    auth.users -> same trigger -> blocked (consistent with "same email").
+  - Internal/admin creation with a cooled-down email: explicitly run
+    `UPDATE deleted_emails SET available_at = now()` first (service-role
+    escape hatch; documented, never automatic).
+
+================================================================================
+9. STORAGE
+================================================================================
+9.1 TARGET LAYOUT (buckets unchanged: model-images, profile-images)
+
+  ACTIVE (Zone A — removed with the account)
+    profile-images/{uid}/source-photo-{uuid}.{ext}       user upload -> DELETE
+    model-images/{uid}/personal-model-{uuid}.png         -> COPY, then DELETE
+    model-images/{uid}/clothing-originals/{uuid}.*       user upload -> DELETE
+    model-images/{uid}/clothing-previews/{uuid}.png      -> COPY, then DELETE
+    model-images/{uid}/clothing/{characterId}/{uuid}.png -> COPY, then DELETE
+    model-images/{uid}/wardrobe-results/{uuid}.png       -> COPY, then DELETE
+    model-images/{uid}/try-on-{uuid}.{ext}               -> COPY, then DELETE
+
+  RETAINED (Zone B — survives; service-role only)
+    model-images/retained/{deletion_id}/models/{uuid}.png
+    model-images/retained/{deletion_id}/clothing/{uuid}.png
+    model-images/retained/{deletion_id}/previews/{uuid}.png
+    model-images/retained/{deletion_id}/results/{uuid}.png
+    (dress + FASHN results share results/; kind lives in the row)
+
+  PLATFORM (never touched by user actions)
+    model-images/system-reference/base-forms/{woman,man}.png
+
+9.2 OWNERSHIP RULES
+  - `{uid}/` prefix <=> user_id column (audit 19, rule 6): only that
+    user's policies can reach those objects.
+  - `retained/{deletion_id}/` has NO uid and NO active table pointing at
+    it -> by the same rule it must carry NO authenticated policy; access
+    = service role only; application code never signs such paths.
+  - system-reference: read-only for authenticated (existing 0010 policy).
+
+9.3 ACCOUNT DELETION AND STORAGE
+  Order: COPY (P2) -> rows die (P4) -> DELETE originals (P5) -> VERIFY
+  (P6). A file is never deleted before its retained copy is verified and
+  never while a surviving DB row still references it (reverse-lookup
+  guard, audit section 18). All deletes are idempotent, so P5/P6 retry
+  safely after a crash. This closes the account-deletion members of the
+  audit's orphan classes (auth-delete orphans, crash windows,
+  failed-remove-after-row-delete) — problem P3 of section 2.
+
+9.4 POLICY WORK (conditional; decided after M0)
+  M0 inventories the live bucket policies [UNKNOWN — audit F36]. Targets:
+    R1 authenticated may INSERT/SELECT/DELETE ONLY when the object owner
+       is themselves AND the path starts with their uid.
+    R2 NO policy may grant authenticated access to `retained/...`
+       (verify explicitly; if a broad bucket-wide read policy exists,
+       tighten it — or use the fallback: a dedicated private bucket
+       `retained-images` with zero policies; see 16.M5).
+    R3 the system-reference policy stays (name-scoped, read-only).
+  Active-user storage behaviour is otherwise unchanged.
+
+================================================================================
+10. RLS AND SECURITY
+================================================================================
+10.1 ZONE B + C TABLES (new) — deny-all pattern (audit 12.9 exemplary)
+  account_deletions, retained_wardrobe_items, retained_assets,
+  deleted_emails:
+    ALTER ... ENABLE ROW LEVEL SECURITY;
+    NO policies created ("RLS with zero policies denies everything").
+    REVOKE ALL ... FROM anon, authenticated;
+    GRANT SELECT, INSERT, UPDATE, DELETE ... TO service_role;
+  enforce_email_cooldown() + dressed_email_digest(): SECURITY DEFINER with
+  `set search_path = ''`; EXECUTE revoked from public/anon/authenticated
+  (trigger functions fire automatically; nobody can call them directly).
+  signup_email_status() (optional UX): SECURITY DEFINER, EXECUTE granted
+  to anon+authenticated; returns cooldown info only — never reveals
+  whether a live account exists.
+
+10.2 ACTIVE ZONE TABLES — NO CHANGE (hard requirement: no weakening)
+  dressed_characters, wardrobe_items, wardrobe_results,
+  saved_dressed_outfits, ai_generation_limits/usage, profiles: audit
+  12.1-12.10 policies stay exactly as they are (own-row
+  `auth.uid() = user_id`; privileged writes only via SECURITY DEFINER
+  RPCs).
+  ONE tightening (M4): drop "Users can delete their own base-type
+  clothing assets" from wardrobe_item_ai_assets so a client can never
+  delete a row without its file (audit 12.4/F08). The app never calls
+  that path [CONFIRMED BY CODE] — no functionality regresses.
+
+10.3 GUARANTEES MAPPED TO REQUIREMENTS
+  - Active users see only their own private data: unchanged own-row
+    policies + uid-prefixed storage (10.2, 9.2).
+  - A deleted user loses access: auth.admin.deleteUser destroys the user
+    row -> refresh tokens die immediately; any not-yet-expired access
+    token (<= 1h) finds NOTHING to read because every row it could match
+    has cascaded and every file under its prefix is swept (P5). Residual
+    exposure is a token with zero readable rows (risk R6).
+  - Retained assets never become public: deny-all RLS (10.1) + no
+    authenticated storage policy on `retained/` (9.2/9.4) + application
+    code never signs retained paths (7.3). Three independent layers,
+    each sufficient alone.
+  - Server-side/admin flows where required: the deletion endpoint runs on
+    the service role (deleteUser, sweep, Zone B writes); cooldown
+    enforcement lives in the DB trigger; character/quota RPCs keep their
+    current SECURITY DEFINER design.
+  - Nothing is weakened: the ONLY grant changes in this plan are one
+    REVOCATION (M4) and brand-new deny-all tables.
+
+10.4 SECURITY DEFINER CONSEQUENCES TO WATCH
+  - Every new definer function sets `search_path = ''` and fully qualifies
+    references (house style: 0001/0011/0016).
+  - enforce_email_cooldown() executes on EVERY auth.users insert/update:
+    exactly one PK-indexed lookup, raising ONLY the cooldown exception;
+    the lookup is guarded so an unexpected error cannot take down
+    unrelated auth writes (test S7).
+  - The deletion endpoint re-verifies identity (Bearer session + password
+    re-entry) before any destructive step and NEVER accepts a target uid
+    from the client — always the session's own uid.
+
+================================================================================
+11. EXISTING USER MIGRATION
+================================================================================
+Principle: ZERO data movement for live users. Everything here is
+additive; existing rows keep their uids, paths and relationships.
+
+  EXISTING ARTIFACT         | REQUIRED CHANGE             | RISK
+  --------------------------+-----------------------------+--------
+  auth.users rows           | none (never touched)        | none
+  login/signup              | none (trigger only blocks   | very low
+                            | cooled-down emails)         |
+  profiles rows             | FK/uniqueness VERIFIED;     | low —
+                            | added in M1 only if missing  | guarded
+                            | (rows unchanged)            | (M0 first)
+  wardrobe_items            | none                        | none
+  wardrobe_item_ai_assets   | none (one RLS grant revoked | low —
+                            | in M4)                      | unused path
+  dressed_characters        | none                        | none
+  saved_dressed_outfits     | none                        | none
+  generated images          | none — no file moves for    | none
+                            | ACTIVE users                |
+  AI quotas / RPCs          | none                        | none
+  legacy asset table        | none                        | none
+  missing live migrations   | M0 verifies 0003/0004/0006  | info only
+                            | 0007 state [UNKNOWN]        |
+
+Backward-compatibility properties:
+ 1. No existing table gains/loses/renames a column; no existing row is
+    rewritten. (Only possible ALTER: profiles' FK if M0 proves it missing
+    — constraint metadata, not data.)
+ 2. New tables start EMPTY; no backfill rewrites user data (section 13).
+ 3. The cooldown trigger is invisible to existing users: it returns NEW
+    immediately when no cooldown row matches, so signup/login/generation
+    behave exactly as today.
+ 4. Deletion only happens when a user explicitly requests it; no account
+    changes state automatically.
+ 5. Every migration rolls back by dropping ONLY objects it created —
+    existing data is never in a rollback path.
+
+Data needing attention (detail in section 13):
+ B1 profiles coverage — auth users with NO profiles row (possible since
+    profiles are client-created) -> create missing rows from auth
+    metadata via an idempotent service-role script.
+ B2 profiles FK validation — orphan profiles rows must be resolved BEFORE
+    any FK is added; M0 counts them first.
+ B3 storage orphan baseline report — objects under `{uid}/` referenced by
+    no row: REPORT ONLY, no deletion in this plan (audit P3/F34/F35).
+
+================================================================================
+12. MIGRATION PLAN
+================================================================================
+Small, ordered, additive steps. Each entry: name / purpose / structures
+touched / changes existing data / backfill / protection+rollback / tests.
+Sequence: M0 -> M1 -> M2 -> M3 -> M4 -> (M5 conditional) -> M6 (code).
+
+--------------------------------------------------------------------------------
+M0 — 202610060000_preflight_live_inspection (READ-ONLY ops step)
+  Purpose      : resolve every [UNKNOWN] before schema work: profiles
+                 DDL+FK+RLS, auth trigger privileges, storage policies,
+                 state of missing migrations 0003/0004/0006/0007.
+  Touches      : nothing (inspection queries; STAGING first).
+  Changes data : no.          Backfill: no (produces B1/B2/B3 counts).
+  Protection   : read-only; aborts the plan if profiles' shape is
+                 unexpected or trigger privilege is unavailable
+                 (fallback: Auth Hook, 8.2b — recorded as a decision).
+  Tests        : baseline for T-EX1..T-EX3 (section 14).
+
+--------------------------------------------------------------------------------
+M1 — 202610060001_profiles_integrity
+  Purpose      : bring `profiles` under version control; guarantee the
+                 1:1 auth relation: FK user_id -> auth.users(id) ON
+                 DELETE CASCADE (added ONLY if M0 shows it missing),
+                 uniqueness on user_id, and guarded create-if-missing
+                 own-row RLS policies (SELECT/INSERT/UPDATE; NO client
+                 DELETE).
+  Structures   : public.profiles (constraint + optional policies).
+  Changes data : NO (constraint/policy metadata only; orphans must be
+                 zero first — B2).
+  Backfill     : B1 runs BEFORE this migration (idempotent script); B2
+                 resolves orphan profiles before the FK is added.
+  Protection   : DO-block guards (`if not exists`); FK add fails loudly
+                 rather than dropping anything. Rollback:
+                 ALTER TABLE profiles DROP CONSTRAINT ...; DROP POLICY
+                 IF EXISTS ... — profiles rows untouched.
+  Tests        : T-EX1, T-EX2, T-A1, T-P1.
+
+--------------------------------------------------------------------------------
+M2 — 202610060002_account_deletion_email_cooldown
+  Purpose      : the 7-day email restriction + the deletion ledger.
+  Structures   : CREATE public.account_deletions (7.2);
+                 CREATE public.deleted_emails (8.3);
+                 CREATE dressed_email_digest(), enforce_email_cooldown(),
+                 signup_email_status();
+                 CREATE TRIGGER trg_email_cooldown_insert BEFORE INSERT
+                   ON auth.users FOR EACH ROW ...;
+                 CREATE TRIGGER trg_email_cooldown_update BEFORE UPDATE
+                   OF email ON auth.users FOR EACH ROW ...;
+                 RLS enabled + ZERO policies on both tables;
+                 GRANT full to service_role; REVOKE ALL from
+                 anon/authenticated; EXECUTE revoked from
+                 public/anon/authenticated on the definer objects.
+  Changes data : NO existing rows; no auth.users row is altered.
+  Backfill     : none (tables start empty).
+  Protection   : all objects new; guarded creation (IF NOT EXISTS /
+                 DROP TRIGGER IF EXISTS). Rollback: DROP TRIGGER ... ON
+                 auth.users; DROP FUNCTION ...; DROP TABLE
+                 deleted_emails, account_deletions — zero effect on any
+                 user row.
+  Tests        : T-S1..T-S6 incl. bypass attempts.
+
+--------------------------------------------------------------------------------
+M3 — 202610060003_retained_generated_assets
+  Purpose      : Zone B — retention tables for generated assets.
+  Structures   : CREATE public.retained_wardrobe_items,
+                 public.retained_assets (7.2: CHECKs, UNIQUEs, cascade FKs
+                 to account_deletions, optional composite FK to
+                 retained_wardrobe_items); RLS enabled + ZERO policies;
+                 REVOKE ALL from anon/authenticated; GRANT full to
+                 service_role.
+  Changes data : NO (empty tables).
+  Backfill     : none.
+  Protection   : additive only, guarded CREATE. Rollback: DROP TABLE
+                 retained_assets, retained_wardrobe_items — nothing else.
+  Tests        : T-R1..T-R4 (deny-all), T-D1..T-D3 (retention).
+
+--------------------------------------------------------------------------------
+M4 — 202610060004_tighten_clothing_asset_delete_grant
+  Purpose      : remove the client-held DELETE that can orphan files
+                 (audit 12.4/F08; plan 10.2).
+  Structures   : wardrobe_item_ai_assets — DROP POLICY "Users can delete
+                 their own base-type clothing assets";
+                 REVOKE DELETE ON wardrobe_item_ai_assets FROM
+                 authenticated.
+  Changes data : NO.
+  Backfill     : none.
+  Protection   : removes only a privilege the app never uses
+                 [CONFIRMED BY CODE]. Rollback: re-create the policy
+                 verbatim from 0010:54-58 (kept as a comment in the
+                 migration).
+  Tests        : T-C8 (item deletion still works via the server path),
+                 T-S5 (direct client DELETE now denied).
+
+--------------------------------------------------------------------------------
+M5 — 202610060005_storage_retained_policy (CONDITIONAL on M0)
+  Purpose      : guarantee R2 (section 9.4) — no authenticated access to
+                 `retained/...`.
+  Structures   : storage.objects policies only (tighten any broad rule);
+                 fallback variant: create a dedicated private bucket
+                 `retained-images` with zero policies and point the
+                 retention target prefix at it (section 16, C3).
+  Changes data : NO (no object is moved by this migration).
+  Backfill     : none.
+  Protection   : inspect first, apply on STAGING; rollback = restore the
+                 previous policy statement captured in the migration
+                 header. If M0 proves R2 already holds, SKIP M5 entirely.
+  Tests        : T-S4, T-R3.
+
+--------------------------------------------------------------------------------
+M6 — CODE DEPLOY (not a SQL migration; separate approval)
+  Purpose      : deletion endpoint + UI + optional UX pre-check.
+  Structures   : NEW src/pages/api/account/delete.ts; NEW
+                 src/lib/server/account-deletion.ts (phases P0-P6);
+                 profile.astro "DELETE ACCOUNT" confirmation with password
+                 re-entry; OPTIONAL NEW
+                 src/pages/api/account/signup-status.ts + signup.astro
+                 cooldown message. No other file is modified.
+  Changes data : none until a user explicitly deletes their account.
+  Backfill     : none.
+  Protection   : additive feature; idempotent via
+                 account_deletions.phase; fresh session + password
+                 re-entry required; kill-switch = remove the route.
+  Tests        : T-D1..T-D7 end-to-end (section 14).
+
+ DEFERRED (audit carry-overs intentionally NOT part of this plan; none
+ conflicts with it, none is required by these requirements): audit M4
+ character-storage sweep completeness, M5 saved-outfit trigger behaviour,
+ M6 try-on finalization unification, M7 asset path renaming, M8 override
+ seed cleanup, M9 ai_generation_events.
+
+================================================================================
+13. BACKFILL PLAN
+================================================================================
+There is NO bulk data migration in this plan. Three targeted data
+preparations run BEFORE the migrations that depend on them:
+
+ B1 — profiles coverage repair (before M1)
+   What   : for every auth.users row without a profiles row, INSERT
+            profiles(user_id, name, gender) from raw_user_meta_data
+            (name fallback = email prefix; gender only when 'woman'/
+            'man') — mirroring profile.astro:633-646 exactly.
+   Why    : guarantees the 1:1 relation asserted by M1's FK/UNIQUE and
+            removes any "profile missing" edge case.
+   Scope  : service-role script, idempotent (insert only where missing),
+            STAGING first; counts reported before/after.
+   Safety : never updates or deletes an existing profiles row.
+   Rollback: undo = delete exactly the rows the run log lists as created.
+   Tests  : T-EX1.
+
+ B2 — profiles orphan resolution (before the FK in M1)
+   What   : list profiles rows whose user_id has NO auth.users row, then
+            delete ONLY those listed orphans (they belong to already
+            deleted auth users — the historical F27 situation).
+   Why    : an FK cannot be added while orphans exist; skipping it leaves
+            the audit's [UNKNOWN] unresolved.
+   Scope  : SELECT first (M0) -> explicit approval -> DELETE of the
+            exact list; verified count = 0 before M1 attempts the FK.
+   Safety : rows with a live auth user are never touched.
+   Tests  : T-EX2.
+
+ B3 — storage orphan baseline (report-only; right after M0)
+   What   : list objects under every `{uid}/` prefix that no DB path
+            column references; emit a report (bucket, uid, path).
+   Why    : establishes the PRE-EXISTING orphan population (audit
+            P3/F34/F35) so new orphans can later be told apart from old
+            ones. No file is deleted by this plan.
+   Safety : read-only. Any cleanup = separate future approval.
+   Tests  : T-EX3.
+
+ NOT backfilled (explicit): retained tables (empty by design — retention
+ happens only at future deletion time), deleted_emails (empty; no
+ historical deletions exist to reconstruct), and every wardrobe /
+ asset / character / outfit / quota row (untouched).
+
+================================================================================
+14. TEST PLAN
+================================================================================
+Run on STAGING after each migration; two accounts (A, B) for all
+cross-user cases. Test IDs map to each migration's "Tests" list.
+
+### A — NY BRUGER SIGNUP / LOGIN / LOGOUT
+ T-A1  Signup fresh email -> auth user created, session returned, profile
+       page loads (cooldown trigger passed: no matching row).
+ T-A2  Login with password -> session restored; logout -> session gone.
+ T-A3  Wrong password rejected; nonexistent user rejected.
+ T-A4  (after M2) Signup for an email NOT in deleted_emails behaves
+       byte-for-byte as before M2 — regression guard for signup.astro.
+ T-A5  Unrelated auth operations (password reset, email confirmation)
+       still work — the cooldown trigger does not interfere (guard 10.4).
+
+### B — EKSISTERENDE BRUGERE EFTER MIGRATION
+ T-EX1 Every auth user has exactly one profiles row after B1 (missing
+       count = 0); pre-existing name/gender values unchanged.
+ T-EX2 Zero profiles orphans after B2; FK present after M1; deleting an
+       auth user cascades profiles (tested on a STAGING clone).
+ T-EX3 Storage baseline report produced; counts recorded for later
+       comparison.
+ T-EX4 EXISTING user logs in and sees profile, characters, wardrobe,
+       AI-ready badges, saved outfits and quota counters identical to
+       pre-migration counts (no data moved).
+ T-EX5 Existing user runs a full AI generation flow (T-C3/T-P2)
+       unchanged.
+
+### C — PROFIL / WARDROBE / CLOTHING / CHARACTER / SAVED OUTFITS
+ T-P1  First profile load creates exactly ONE profiles row (idempotent).
+ T-P2  Character generation -> dressed_characters row (is_primary,
+       normalized-v1), file under {uid}/, profiles mirror updated,
+       quota +1.
+ T-C1  Upload garment -> item row + original file under
+       {uid}/clothing-originals/.
+ T-C2  Clean preview -> preview_path set + preview file exists.
+ T-C3  AI-ready clothing generation -> wardrobe_item_ai_assets row
+       (uid,item,base_type) v3 + file under {uid}/clothing/...; quota +1
+       ONLY on success; failure leaves usage unchanged.
+ T-C4  Closet badge + DRESSED rendering still honour base-type gating.
+ T-C5  Saved outfit: save -> row; load -> layers render; delete -> row
+       gone; items/assets untouched.
+ T-C8  (after M4) DELETE /api/wardrobe/items/{id} still removes item +
+       both asset rows + files + related results (server path intact);
+       a raw client DELETE on wardrobe_item_ai_assets is now DENIED.
+
+### D — ACCOUNT DELETION + PRESERVATION AF GENERATED IMAGES (M6)
+ T-D1  Happy path: account with 2 characters, 3 items (2 AI-ready),
+       1 saved outfit, 1 result deletes the account with correct
+       password -> account_deletions reaches phase 'verified'.
+ T-D2  PRESERVATION: retained_assets rows exist for every character
+       model, clothing asset (current + legacy), preview and result;
+       every retained_path EXISTS in storage under
+       retained/{deletion_id}/...; counts match the pre-deletion census
+       recorded in the run log.
+ T-D3  ROW CLEANUP: zero rows remain in profiles, dressed_characters,
+       wardrobe_items, wardrobe_item_ai_assets (+legacy),
+       saved_dressed_outfits, wardrobe_results, ai_generation_usage,
+       ai_generation_limit_overrides for that uid.
+ T-D4  STORAGE AFTER DELETION: zero objects under {uid}/ in BOTH
+       buckets; system-reference files untouched; retained files
+       untouched; no OTHER user's files touched.
+ T-D5  ACCESS LOST: old email/password login fails (user not found); the
+       old access token reads nothing; no endpoint can mint a signed URL
+       for a retained path.
+ T-D6  FAILURE PATHS: wrong password -> nothing deleted (no phase beyond
+       'initiated'/'cancelled'); simulated crash between phases ->
+       re-running the endpoint resumes idempotently to 'verified'.
+ T-D7  PII CHECK: no email, name or source photo remains for the deleted
+       user; deleted_emails contains only a digest + timestamps.
+
+### E — SAMME EMAIL FØR/EFTER 7 DAGE
+ T-E1  Immediately after deletion: signup with the SAME email (lower-case
+       and mixed-case) -> BLOCKED by the DATABASE trigger (verify the
+       rejection originates server-side, not from frontend logic).
+ T-E2  BYPASS ATTEMPT: direct curl to the GoTrue /signup endpoint with
+       the blocked email -> same BLOCK (proves enforcement is not
+       frontend-only).
+ T-E3  Old credentials login -> fails (no auth user exists).
+ T-E4  7-day passage simulated on STAGING
+       (available_at = now() - interval '1 second') -> signup SUCCEEDS,
+       creates a NEW uid, Zone A empty, login works, fresh profile
+       creation works, and the new account sees NONE of the old data.
+ T-E5  Isolation: a different email is unaffected while A is blocked;
+       digest normalisation handles case/whitespace variants.
+ T-E6  Email-change path: an auth user changing their email TO a blocked
+       email is rejected by trg_email_cooldown_update.
+
+### F — RLS / CROSS-USER / SECURITY
+ T-S1  Anon key without session: zero rows on every active table; zero
+       access to Zone B tables.
+ T-S2  Account B cannot read A's items/characters/assets/outfits/results
+       or storage objects (signed URL fails).
+ T-S3  Zone B DENY-ALL: as authenticated A, SELECT on account_deletions /
+       retained_assets / retained_wardrobe_items / deleted_emails ->
+       permission denied (zero policies).
+ T-S4  Storage: an authenticated request for a `retained/...` object
+       fails (and the `retained-images` fallback bucket, if M5 uses it,
+       returns nothing).
+ T-S5  Client DELETE on wardrobe_item_ai_assets denied (after M4);
+       client UPDATE on ai_generation_usage / limits denied.
+ T-S6  pg_roles inspection: Zone B tables grant only service_role;
+       anon/authenticated revoked.
+ T-S7  Trigger robustness: an unexpected error inside the cooldown
+       lookup must not break unrelated auth writes (guard 10.4).
+
+================================================================================
+15. RISKS
+================================================================================
+ R1  TRIGGER PRIVILEGE UNKNOWN — whether BEFORE triggers on auth.users
+     (and UPDATE OF email) are permitted must be proven in M0 on a
+     staging clone; the standard Supabase pattern (AFTER INSERT
+     handle_new_user) suggests yes. FALLBACK if not: Auth "Before User
+     Created" hook (8.2b) — recorded as an explicit decision, never a
+     silent weakening. Mitigation: M0 gates M2.
+ R2  GENERIC ERROR UX — a trigger exception surfaces through GoTrue as a
+     generic "Database error saving new user". Mitigation: optional
+     signup-status pre-check (8.4) gives friendly copy while the trigger
+     stays authoritative. Not a correctness risk.
+ R3  DELETION CRASH WINDOWS — a crash between phases could leave partial
+     state. Mitigated by: copy BEFORE delete (P2), cooldown BEFORE auth
+     delete (P3 < P4), an idempotent phase machine in
+     account_deletions, a retryable endpoint and verification (P6).
+     Residual: retained copy done but auth delete failed -> retry; the
+     ordering makes data loss impossible.
+ R4  STORAGE COPY SIZE — many/large images make P2 long. Mitigation:
+     pagination, per-file verification, ABORT BEFORE deletion on any
+     failure; endpoint timeout leaves a resumable phase.
+ R5  COOLDOWN HASH WEAKNESS — sha256(email) without salt is
+     brute-forceable IF an attacker already reads the table; the table
+     is deny-all to all clients and only the definer function reads it,
+     so exposure requires a full DB compromise (which would already
+     expose auth.users). Alternative (raw email, same protections)
+     trades PII for readability — digest chosen. Documented, accepted.
+ R6  TOKEN LIFETIME — a deleted user's access token stays valid until
+     natural expiry (<= 1h) but matches zero rows (full cascade + sweep)
+     so it can read nothing. Instant revocation would require shortening
+     JWT expiry or a deny-list — explicitly NOT part of this plan.
+ R7  DUAL WORLDS — retained files share a bucket with active files.
+     Mitigation: prefix isolation + policy verification (M0/M5) +
+     dedicated-bucket fallback; T-S4 proves it. If M0 finds a bucket-wide
+     read policy, M5 becomes MANDATORY before M6 ships.
+ R8  RETENTION/PRIVACY — retained images include a generated likeness
+     (character models) because the requirement mandates preserving them.
+     Mitigation: identity fully severed (no email/name/uid link),
+     deny-all access, documented admin purge (delete account_deletions ->
+     cascades rows, then delete retained files) for legal erasure.
+     Decision recorded, not silent.
+ R9  HISTORICAL ORPHANS — pre-existing orphan files (audit P3) are
+     untouched; the T-EX3 baseline prevents confusing them with new leaks.
+ R10 MIGRATION ORDERING — deleted_emails (M2) references
+     account_deletions (M2, same file); retained tables (M3) reference
+     account_deletions (M2). Sequence M2 -> M3 mandatory; each migration
+     re-checks dependencies with guards.
+ R11 EMAIL ALIASES — plus-addressing/dots are distinct strings to GoTrue;
+     the cooldown digests exactly what GoTrue stores, so blocking
+     behaves identically to today's uniqueness — no stronger, no weaker.
+ R12 RACING SIGNUP DURING DELETION — a signup racing P4 hits native
+     uniqueness (row present) or the cooldown (row present from P3);
+     both reject safely; no partial state is reachable.
+
+================================================================================
+16. EXACT CHANGES TO IMPLEMENT
+================================================================================
+(For approval — nothing below exists yet.)
+
+--- SQL MIGRATIONS (new files under supabase/migrations/) ---
+ M1  202610060001_profiles_integrity.sql
+     * conditional ALTER TABLE public.profiles ADD CONSTRAINT
+       profiles_user_id_fkey FOREIGN KEY (user_id) REFERENCES
+       auth.users(id) ON DELETE CASCADE   [only if M0 shows missing]
+     * conditional ADD CONSTRAINT profiles_user_id_key UNIQUE (user_id)
+       [if missing]
+     * guarded CREATE POLICY (own-row SELECT/INSERT/UPDATE) IF NOT EXISTS
+       — only where M0 shows they are missing; NEVER a client DELETE.
+ M2  202610060002_account_deletion_email_cooldown.sql
+     * CREATE TABLE public.account_deletions (7.2 exact columns)
+     * CREATE TABLE public.deleted_emails (8.3 exact columns)
+     * CREATE FUNCTION public.dressed_email_digest(text) IMMUTABLE
+     * CREATE FUNCTION public.enforce_email_cooldown() RETURNS trigger,
+       SECURITY DEFINER, SET search_path = ''
+     * CREATE FUNCTION public.signup_email_status(text) SECURITY
+       DEFINER (optional UX)
+     * CREATE TRIGGER trg_email_cooldown_insert BEFORE INSERT ON auth.users
+     * CREATE TRIGGER trg_email_cooldown_update BEFORE UPDATE OF email
+       ON auth.users
+     * RLS enabled with ZERO policies on both tables; GRANT full to
+       service_role; REVOKE ALL from anon/authenticated; EXECUTE revoked
+       from public/anon/authenticated on the definer functions.
+ M3  202610060003_retained_generated_assets.sql
+     * CREATE TABLE public.retained_wardrobe_items (7.2)
+     * CREATE TABLE public.retained_assets (7.2: CHECKs, UNIQUEs, FK
+       cascade to account_deletions)
+     * RLS enabled with ZERO policies; REVOKE ALL from
+       anon/authenticated; GRANT full to service_role.
+ M4  202610060004_tighten_clothing_asset_delete_grant.sql
+     * DROP POLICY "Users can delete their own base-type clothing
+       assets" ON wardrobe_item_ai_assets  [rollback statement kept as
+       a comment inside the file]
+     * REVOKE DELETE ON wardrobe_item_ai_assets FROM authenticated;
+ M5  202610060005_storage_retained_policy.sql (CONDITIONAL)
+     * tighten storage.objects policies so NO authenticated policy
+       matches `retained/...` — OR create the private bucket
+       `retained-images` (zero policies) as fallback.
+
+--- OPS SCRIPTS (service role, manual, idempotent) ---
+ B1  scripts/backfill-missing-profiles  — 13.B1
+ B2  scripts/resolve-orphan-profiles     — 13.B2 (SELECT list first;
+                                          DELETE only after approval)
+ B3  scripts/report-storage-orphans     — 13.B3 (read-only)
+ M0  scripts/preflight-inspection       — 12.M0 (schema/policy/
+                                          privilege inventory)
+
+--- CODE (TypeScript / Astro; ships AFTER M1-M5 are verified on staging) ---
+ C1  NEW src/pages/api/account/delete.ts
+     POST; Bearer session + {password}; derives uid FROM THE SESSION
+     ONLY (never from the body); invokes C2; returns per-phase status;
+     idempotent.
+ C2  NEW src/lib/server/account-deletion.ts
+     implements phases P0-P6 (section 6.2) using
+     createSupabaseServiceClient() and auth.admin.deleteUser():
+       - Zone B row copies + storage COPY to the retained prefix,
+         each verified before continuing
+       - deleted_emails insert (digest, available_at = deleted_at + 7d,
+         deletion_id)
+       - auth user delete (cascades rows; explicit profiles delete first
+         if M0/M1 shows no FK)
+       - `{uid}/` sweep in both buckets with reverse-lookup guard
+       - verification + account_deletions phase/error bookkeeping
+ C3  Retention target prefix constant in C2:
+     `model-images/retained/{deletion_id}/...`
+     (or `retained-images/...` if M5 takes the fallback bucket).
+ C4  NEW src/pages/api/account/signup-status.ts (OPTIONAL UX)
+     calls signup_email_status(); returns {blocked, available_at} ONLY
+     for cooldown hits (never reveals live-account existence).
+ C5  src/pages/profile.astro — ADD a "DELETE ACCOUNT" danger-zone block:
+     password re-entry field, explicit confirmation copy, status
+     feedback; on success: sign out and redirect to /login.
+     (Additive block only; no existing profile logic is edited.)
+ C6  src/pages/signup.astro — ADD an optional cooldown message branch
+     fed by C4 (presentation only; the existing error mapping at
+     lines 160-182 stays untouched).
+
+ NO OTHER FILE IS MODIFIED. Explicitly untouched: login.astro auth
+ logic, all /api/ai/* routes, all /api/wardrobe/* routes,
+ api/characters/[id].ts, api/profile/source-photo.ts, all
+ src/lib/server/ai/*, all src/lib/shared/*, wardrobe.astro, closet.astro,
+ all styles, all existing migrations, every existing table's data,
+ every existing storage object of active users (section 17).
+
+================================================================================
+17. FUNCTIONALITY THAT MUST REMAIN UNCHANGED
+================================================================================
+Hard requirement: this plan ADDS account deletion, retention and the
+email cooldown; it removes/changes nothing that users rely on.
+
+ PROFILE            : load/create/save flow (profile.astro), gender lock
+                      (0001 trigger), model_photo_path mirror, character
+                      history cards — untouched. Only additive: the
+                      danger-zone block (C5) and M1's constraints.
+ CLOSET             : upload, preview, AI-ready badges, item delete,
+                      outfit selection — untouched (T-C1..C8 verify).
+ DRESSED            : fitting room rendering, anchors, layer order,
+                      base-type gating — untouched (no style or
+                      wardrobe.astro change).
+ CHARACTERS         : generation, publish/set_primary/delete RPCs,
+                      one-primary index, contract 'normalized-v1'
+                      gating — untouched.
+ WARDROBE ITEMS     : schema, CRUD endpoints, path CHECKs — untouched.
+ REUSABLE CLOTHING  : PK (user,item,base_type), service-role writes,
+ ASSETS               reuse across outfits/characters — untouched
+                      (only the redundant client DELETE is revoked, M4).
+ AI-READY FLOW      : process-clothing route, background job, version-3
+                      cache-hit, force-regenerate header — untouched.
+ AI CLOTHING        : prompt, validation gates, storage layout for
+ GENERATION           ACTIVE users — untouched (no file moves outside
+                      an actual account deletion).
+ CHARACTER/MODEL    : personal-model routes, character-job, master-form
+ GENERATION           handling — untouched.
+ SAVED OUTFITS      : save/load/delete RPCs and triggers — untouched.
+ AI QUOTAS          : limits (1/3/1), reserve/finalize functions, owner
+                      exemption, override table — untouched.
+ EXISTING LOGIN/    : signUp/signInWithPassword/session handling and
+SIGNUP               signup.astro/login.astro behaviour — untouched
+                      (C6 only ADDS a message branch; the cooldown
+                      trigger rejects ONLY cooled-down emails).
+ SUPABASE           : same project, buckets, anon/service keys,
+ INTEGRATION          background functions, RPC pattern — unchanged.
+
+ If any proposed change ever threatens a line above, it is out of scope
+ for this plan and requires a NEW review cycle.
+
+--------------------------------------------------------------------------------
+END OF PLAN — ANALYSIS AND PLANNING ONLY. No SQL was written or executed,
+no migration created, no table/policy/storage/auth/code/data changed. The
+implementation awaits separate approval.
+--------------------------------------------------------------------------------
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -2,18 +2,12 @@
    PROFILE THEME RESTORATION
 ======================================== */
 
+/* The theme variables are intentionally NOT redeclared here.
+   `body.profile-page-shell` (0,1,1) outranks `:root[data-profile-theme="..."]` (0,1,0),
+   so declaring the pink palette on the body silently overrode the gender-scoped theme
+   for a Man profile. Inheriting from the root keeps `data-profile-theme` the single
+   source of truth for both the woman and the man theme. */
 body.profile-page-shell {
-  --pink-100: #fff0f6;
-  --pink-200: #ffd7e7;
-  --pink-300: #ffb5d2;
-  --pink-400: #f77eae;
-  --pink-500: #ed4f8e;
-  --pink-600: #d93676;
-  --profile-theme-background: #ffdce9;
-  --profile-theme-bg: #f7e8ef;
-  --profile-header-mid: #f982b0;
-  --profile-header-end: #ed6599;
-
   background:
     radial-gradient(circle at 15% 15%, var(--profile-theme-background) 0 8%, transparent 25%),
     radial-gradient(circle at 85% 80%, #e8ddff 0 8%, transparent 25%),
@@ -619,7 +613,7 @@ body.profile-page-shell {
   inset: 0;
   object-fit: contain;
   object-position: center;
-  --clothing-base-scale: 0.56;
+  --clothing-base-scale: 1;
   transform-origin: calc(var(--anchor-x, 0.5) * 100%) calc(var(--anchor-y, 0.2) * 100%);
   transform:
     translate(var(--clothing-x, 0%), var(--clothing-y, 0%))

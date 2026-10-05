@@ -2,7 +2,7 @@ import {
   CURRENT_CLOTHING_ASSET_VERSION,
   type ClothingBaseType,
 } from "../shared/clothing-assets";
-import { clothingPlacement, DRESSED_ANCHORS } from "../shared/clothing-categories";
+import { clothingPlacement, dressedAnchor } from "../shared/clothing-categories";
 import {
   loadPersistentWardrobe,
   loadSavedDressedOutfits,
@@ -32,7 +32,7 @@ function renderLayers(
     layer.alt = "";
     layer.style.zIndex = String(index + 1);
     const placement = clothingPlacement(item.category);
-    const anchor = DRESSED_ANCHORS[placement.anchor];
+    const anchor = dressedAnchor(placement.anchor, baseType);
     layer.style.setProperty("--anchor-x", String(anchor.x));
     layer.style.setProperty("--anchor-y", String(anchor.y));
     layer.style.setProperty("--clothing-scale", String(placement.scale));

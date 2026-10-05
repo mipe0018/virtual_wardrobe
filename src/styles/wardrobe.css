@@ -645,7 +645,7 @@
    * Category x/y offsets are applied on top. A single uniform scale() is used,
    * so garments are never stretched.
    */
-  --clothing-base-scale: var(--dressed-clothing-scale, 0.56);
+  --clothing-base-scale: var(--dressed-clothing-scale, 1);
   transform-origin: calc(var(--anchor-x, 0.5) * 100%) calc(var(--anchor-y, 0.2) * 100%);
   transform:
     translate(var(--clothing-x, 0%), var(--clothing-y, 0%))
@@ -910,3 +910,121 @@
   font-family: "DM Mono", monospace;
   font-size: 0.6rem;
 }
+
+/* ========================================
+   PLACEMENT EDITOR (per-item adjustment)
+   ========================================
+   Additive rules only — the existing .dressed-clothing-layer transform
+   above is untouched. Placement is applied through the same CSS
+   variables the existing transform already reads; layer order (z-index)
+   is not affected by any rule below. */
+/* Panel lives INSIDE .outfit-bar (flex column): the bar's existing
+   height:100% would otherwise push a sibling panel outside the
+   .outfit-panel box, where .wardrobe-screen{overflow:hidden} clips it. */
+.placement-panel {
+  flex: 0 0 auto;
+  width: 100%;
+  padding: 0.75rem;
+  display: grid;
+  gap: 0.55rem;
+  border: 1px solid var(--border);
+  background: var(--white);
+}
+
+.placement-panel[hidden] {
+  display: none;
+}
+
+.placement-panel-title {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.placement-panel-title span:last-child {
+  overflow: hidden;
+  color: var(--grey-700);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.placement-field {
+  display: grid;
+  gap: 0.3rem;
+  font-size: 0.6rem;
+  color: var(--grey-700);
+}
+
+.placement-field select {
+  padding: 0.3rem;
+  border: 1px solid var(--border);
+  background: var(--white);
+  font: inherit;
+  font-size: 0.65rem;
+}
+
+.placement-readout {
+  font-family: "DM Mono", monospace;
+  font-size: 0.6rem;
+  color: var(--grey-700);
+}
+
+.placement-hint {
+  margin: 0;
+  font-size: 0.6rem;
+  color: var(--grey-500);
+}
+
+.placement-actions {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.placement-actions button {
+  flex: 1;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid var(--border);
+  background: var(--white);
+  color: var(--grey-900);
+  font: inherit;
+  font-size: 0.6rem;
+  cursor: pointer;
+}
+
+.placement-actions button:focus-visible,
+.adjust-outfit-item:focus-visible {
+  outline: 2px solid var(--pink-500);
+  outline-offset: 1px;
+}
+
+.adjust-outfit-item {
+  grid-column: 1 / -1;
+  width: 100%;
+  height: 22px;
+  border: 1px solid var(--border);
+  background: var(--white);
+  color: var(--grey-900);
+  font-family: "DM Mono", monospace;
+  font-size: 0.55rem;
+  cursor: pointer;
+}
+
+.adjust-outfit-item[aria-pressed="true"] {
+  background: var(--pink-100);
+}
+
+/* The layers container stays pointer-events: none; ONLY the layer being
+   edited opts in, so dragging can never hit or reorder another layer. */
+.dressed-clothing-layer--editing {
+  pointer-events: auto;
+  cursor: grab;
+  filter: drop-shadow(0 0 3px var(--pink-500));
+}
+
+.dressed-clothing-layer--editing.is-dragging {
+  cursor: grabbing;
+}
+
