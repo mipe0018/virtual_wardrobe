@@ -1017,14 +1017,32 @@
 }
 
 /* The layers container stays pointer-events: none; ONLY the layer being
-   edited opts in, so dragging can never hit or reorder another layer. */
+   edited opts in, so dragging can never hit or reorder another layer.
+   touch-action:none makes touch drags on the edited layer drive the
+   placement drag instead of scrolling the page; every other element keeps
+   its normal scrolling behaviour.
+   Native long-press gestures on <img> (iOS callout, Android context menu,
+   image drag) cancel the pointer stream on real devices — they are
+   suppressed on the edited layer only. Desktop mouse behaviour is
+   unaffected. */
 .dressed-clothing-layer--editing {
   pointer-events: auto;
   cursor: grab;
+  touch-action: none;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-user-drag: none;
   filter: drop-shadow(0 0 3px var(--pink-500));
 }
 
 .dressed-clothing-layer--editing.is-dragging {
   cursor: grabbing;
+}
+
+/* Touch gestures on the placement slider move the slider thumb and never
+   the page; scoped to the placement editor only. */
+.placement-field input[type="range"] {
+  touch-action: none;
 }
 

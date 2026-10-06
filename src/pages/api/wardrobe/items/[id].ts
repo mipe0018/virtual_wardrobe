@@ -1,5 +1,9 @@
 import type { APIRoute } from "astro";
-import { authenticateSupabaseRequest } from "../../../../lib/server/supabase";
+import {
+  authenticateSupabaseRequest,
+  createSupabaseServiceClient,
+} from "../../../../lib/server/supabase";
+import { parsePlacement, type Placement } from "../../../../lib/shared/clothing-placement";
 
 export const prerender = false;
 
@@ -131,4 +135,86 @@ export const DELETE: APIRoute = async ({ params, request }) => {
   }
 
   return new Response(null, { status: 204, headers: { "Cache-Control": "no-store" } });
+};
+
+/* Saves the per-item placement override for ONE clothing item. Authentication
+   still runs through authenticateSupabaseRequest (the caller must present the
+   owner's JWT), and only the placement column plus updated_at are ever
+   touched — the item itself, its assets and any saved outfits are never
+   modified. The UPDATE itself runs on the trusted server client because the
+   owner-RLS UPDATE policy carries a WITH CHECK on reference_path, which is
+   NULL for every item created by the current flows; ownership stays enforced
+   by the authenticated user plus the explicit user_id + item id filters.
+   `placement` may be null (=> existing defaults) or exactly {anchor,x,y,scale}. */
+export const PATCH: APIRoute = async ({ params, request }) => {
+  const authentication = await authenticateSupabaseRequest(request);
+  if (!authentication.ok) {
+    return Response.json(
+      { error: authentication.message },
+      { status: authentication.status, headers: { "Cache-Control": "no-store" } }
+    );
+  }
+  const { user } = authentication;
+  const itemId = params.id;
+  if (!itemId || itemId.length > 100) {
+    return Response.json({ error: "A valid item ID is required." }, { status: 400 });
+  }
+
+  let body: { placement?: unknown };
+  try {
+    const raw = await request.text();
+    if (new TextEncoder().encode(raw).byteLength > 16_000) throw new Error("too large");
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error();
+    body = parsed as { placement?: unknown };
+  } catch {
+    return Response.json(
+      { error: "The request body must be a valid JSON object." },
+      { status: 400 }
+    );
+  }
+  if (!("placement" in body)) {
+    return Response.json({ error: "A placement value is required." }, { status: 400 });
+  }
+  let placement: Placement | null = null;
+  if (body.placement !== null) {
+    placement = parsePlacement(body.placement);
+    if (!placement) {
+      return Response.json(
+        {
+          error:
+            "Placement must be {anchor,x,y,scale} with a known anchor and values inside the editor limits.",
+        },
+        { status: 400 }
+      );
+    }
+  }
+
+  let serviceClient;
+  try {
+    serviceClient = createSupabaseServiceClient();
+  } catch (error) {
+    console.error("Could not open a trusted connection to save this placement.", error);
+    return Response.json({ error: "Could not save this placement." }, { status: 503 });
+  }
+  const { data: updated, error: updateError } = await serviceClient
+    .from("wardrobe_items")
+    .update({ placement, updated_at: new Date().toISOString() })
+    .eq("user_id", user.id)
+    .eq("id", itemId)
+    .select("placement");
+  if (updateError) {
+    // The placement migration has not been applied yet, or the database is
+    // unreachable — report it without breaking the editor session.
+    console.error("Could not save the placement for this item.", updateError);
+    return Response.json({ error: "Could not save this placement." }, { status: 503 });
+  }
+  if (!updated || updated.length === 0) {
+    return Response.json({ error: "This clothing item was not found." }, { status: 404 });
+  }
+  const saved = updated[0] as { placement?: unknown };
+  return Response.json(
+    { placement: saved.placement ?? null },
+    { headers: { "Cache-Control": "no-store" } }
+  );
 };

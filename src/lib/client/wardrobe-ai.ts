@@ -4,6 +4,7 @@ import type {
   ClothingBaseAsset,
   ClothingBaseType,
 } from "../shared/clothing-assets";
+import type { Placement } from "../shared/clothing-placement";
 
 export type ProcessableWardrobeItem = {
   id: string;
@@ -104,6 +105,28 @@ export async function deleteSavedDressedOutfit(
   });
   if (!response.ok) throw await responseError(response, "Could not remove this saved outfit.");
   return true;
+}
+
+/* Persists the placement override of ONE wardrobe item (null = use the
+   existing defaults). Placement belongs to the clothing item, never to an
+   outfit, so the saved value follows the item into every outfit and render. */
+export async function saveItemPlacement(
+  accessToken: string,
+  itemId: string,
+  placement: Placement | null
+): Promise<void> {
+  const response = await fetch(`/api/wardrobe/items/${encodeURIComponent(itemId)}`, {
+    method: "PATCH",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ placement }),
+    cache: "no-store",
+  });
+  if (!response.ok) {
+    throw await responseError(response, "Could not save this placement.");
+  }
 }
 
 export async function processClothingItem(
@@ -254,6 +277,7 @@ export async function loadPersistentWardrobe(accessToken: string): Promise<{
     baseType: ClothingBaseType | null;
     aiReadyAssets: Partial<Record<ClothingBaseType, ClothingBaseAsset>>;
     generationVersion: number | null;
+    placement?: Placement | null;
     createdAt: string;
   }>;
   results: SavedWardrobeResult[];
@@ -279,6 +303,7 @@ export async function loadPersistentWardrobe(accessToken: string): Promise<{
       baseType: ClothingBaseType | null;
       aiReadyAssets: Partial<Record<ClothingBaseType, ClothingBaseAsset>>;
       generationVersion: number | null;
+      placement?: Placement | null;
       createdAt: string;
     }>;
     results?: SavedWardrobeResult[];
