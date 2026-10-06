@@ -32,6 +32,7 @@ type WardrobeRow = {
   reference_path: string | null;
   original_path: string | null;
   preview_path: string | null;
+  placement?: unknown;
   created_at: string;
 };
 
@@ -51,6 +52,13 @@ type CleanPreviewResult = {
 function isMissingPreviewPathColumn(error: { code?: string; message?: string }): boolean {
   return (
     error.message?.includes("preview_path") === true &&
+    (error.code === "42703" || error.code === "PGRST204")
+  );
+}
+
+function isMissingPlacementColumn(error: { code?: string; message?: string }): boolean {
+  return (
+    error.message?.includes("placement") === true &&
     (error.code === "42703" || error.code === "PGRST204")
   );
 }
@@ -183,23 +191,44 @@ export const GET: APIRoute = async ({ request }) => {
     );
   }
 
-  let { data: itemRows, error: itemsError } = await client
-    .from("wardrobe_items")
-    .select("id, name, category, reference_path, original_path, preview_path, created_at")
-    .eq("user_id", user.id)
-    .order("created_at", { ascending: true })
-    .returns<WardrobeRow[]>();
   let previewColumnAvailable = true;
-  if (itemsError && isMissingPreviewPathColumn(itemsError)) {
-    previewColumnAvailable = false;
-    const legacyItems = await client
+  let placementColumnAvailable = true;
+  const itemColumns = () =>
+    [
+      "id",
+      "name",
+      "category",
+      "reference_path",
+      "original_path",
+      ...(previewColumnAvailable ? ["preview_path"] : []),
+      ...(placementColumnAvailable ? ["placement"] : []),
+      "created_at",
+    ].join(", ");
+  // Columns are dropped one at a time when their migration has not been
+  // applied yet, so a deploy that runs before the placement migration (or on a
+  // legacy database) still lists every wardrobe item — placement then simply
+  // reads as null and the existing defaults apply.
+  let itemRows: WardrobeRow[] | null = null;
+  let itemsError: { code?: string; message?: string } | null = null;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const attemptResult = await client
       .from("wardrobe_items")
-      .select("id, name, category, reference_path, original_path, created_at")
+      .select(itemColumns())
       .eq("user_id", user.id)
       .order("created_at", { ascending: true })
-      .returns<Array<Omit<WardrobeRow, "preview_path">>>();
-    itemRows = legacyItems.data?.map((item) => ({ ...item, preview_path: null })) ?? null;
-    itemsError = legacyItems.error;
+      .returns<WardrobeRow[]>();
+    itemRows = attemptResult.data;
+    itemsError = attemptResult.error;
+    if (!itemsError) break;
+    if (placementColumnAvailable && isMissingPlacementColumn(itemsError)) {
+      placementColumnAvailable = false;
+      continue;
+    }
+    if (previewColumnAvailable && isMissingPreviewPathColumn(itemsError)) {
+      previewColumnAvailable = false;
+      continue;
+    }
+    break;
   }
   if (itemsError) {
     console.error("Could not load wardrobe items.", itemsError);
@@ -209,7 +238,11 @@ export const GET: APIRoute = async ({ request }) => {
     );
   }
 
-  const rows = itemRows ?? [];
+  const rows = (itemRows ?? []).map((item) => ({
+    ...item,
+    preview_path: item.preview_path ?? null,
+    placement: item.placement ?? null,
+  }));
   const { data: assetRows, error: assetsError } =
     rows.length
       ? await client
@@ -309,6 +342,7 @@ export const GET: APIRoute = async ({ request }) => {
       baseType: activeAsset ? baseType : null,
       aiReadyAssets,
       generationVersion: activeAsset?.generationVersion ?? null,
+      placement: item.placement ?? null,
       createdAt: item.created_at,
     };
   }));

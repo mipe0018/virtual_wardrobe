@@ -118,11 +118,16 @@ import ProfileTheme from "../components/ProfileTheme.astro";
     normalizeClothingCategory,
     categoryLabel,
     clothingLayerOrder,
-    clothingPlacement,
     dressedAnchor,
     DRESSED_ANCHORS,
     type DressedAnchor,
   } from "../lib/shared/clothing-categories";
+  import {
+    isSamePlacement,
+    parsePlacement,
+    resolveItemPlacement,
+    type Placement,
+  } from "../lib/shared/clothing-placement";
   import {
     CURRENT_CLOTHING_ASSET_VERSION,
     type ClothingBaseAsset,
@@ -138,6 +143,7 @@ import ProfileTheme from "../components/ProfileTheme.astro";
     loadSavedDressedOutfits,
     loadPersistentWardrobe,
     saveDressedOutfit,
+    saveItemPlacement,
     type SavedDressedOutfit,
   } from "../lib/client/wardrobe-ai";
 
@@ -153,6 +159,7 @@ import ProfileTheme from "../components/ProfileTheme.astro";
     generationVersion?: number | null;
     baseType?: ClothingBaseType;
     aiReadyAssets?: Partial<Record<ClothingBaseType, ClothingBaseAsset>>;
+    placement?: Placement | null;
   };
 
   const wardrobeModel =
@@ -240,6 +247,9 @@ import ProfileTheme from "../components/ProfileTheme.astro";
 
   const placementOverrides = new Map<string, PlacementOverride>();
   let editingItemId: string | null = null;
+  // One placement commit at a time, so a second tap (DONE or the ADJUST toggle)
+  // can never start a duplicate PATCH while the first one is still in flight.
+  let placementCommitInProgress = false;
 
   const placementPanel = document.querySelector<HTMLElement>("#placement-panel");
   const placementTitle = document.querySelector<HTMLElement>("#placement-item-name");
@@ -259,10 +269,12 @@ import ProfileTheme from "../components/ProfileTheme.astro";
   });
 
   function resolveLayerPlacement(item: WardrobeItem): PlacementOverride {
-    const override = placementOverrides.get(item.id);
-    if (override) return override;
-    const base = clothingPlacement(item.category);
-    return { anchor: base.anchor, x: base.x, y: base.y, scale: base.scale };
+    // session override -> persisted item placement -> existing category default
+    return resolveItemPlacement({
+      category: item.category,
+      persistedPlacement: item.placement,
+      sessionOverride: placementOverrides.get(item.id),
+    });
   }
 
   function placementLayerElement(itemId: string): HTMLElement | null {
@@ -294,6 +306,71 @@ import ProfileTheme from "../components/ProfileTheme.astro";
     const layer = placementLayerElement(itemId);
     if (layer) applyLayerPlacement(item, layer);
     if (itemId === editingItemId) updatePlacementPanel();
+  }
+
+  /* Persistence happens ONLY on DONE, on an ADJUST-toggle close and on RESET —
+     never during drag or slider input. The write goes through the authenticated
+     wardrobe API (owner-RLS UPDATE of the placement column alone). If it fails —
+     for example the placement migration has not been applied yet — the session
+     value is kept and only an error is reported, so the editor keeps working and
+     defaults stay untouched.
+
+     Returns true when it is safe to close the editor: the value was written, or
+     there was provably nothing to write. Returns false only when the server
+     rejected the write, so the caller can keep the editor (and the session
+     placement) open instead of hiding the failure. */
+  async function persistItemPlacement(
+    itemId: string,
+    placement: Placement | null
+  ): Promise<boolean> {
+    const item = clothingItems.find((entry) => entry.id === itemId);
+    if (!item || !supabase) return true;
+    if (placement === null) {
+      if (item.placement == null) return true; // already permanently at the default
+    } else if (isSamePlacement(item.placement, placement)) {
+      return true; // nothing changed — skip the write
+    }
+    try {
+      const { data: session, error } = await supabase.auth.getSession();
+      const accessToken = session.session?.access_token;
+      if (error || !accessToken) {
+        throw new Error(error?.message ?? "No active session.");
+      }
+      await saveItemPlacement(accessToken, itemId, placement);
+      item.placement = placement;
+      outfitMessage.textContent = "PLACEMENT SAVED.";
+      return true;
+    } catch (error) {
+      console.error("Could not persist this placement.", error);
+      outfitMessage.textContent =
+        "PLACEMENT COULD NOT BE SAVED. IT STILL APPLIES FOR THIS SESSION.";
+      return false;
+    }
+  }
+
+  /* Shared commit used by DONE and by the ADJUST-toggle close: read the current
+     session override, validate it with the SAME parsePlacement the DONE flow
+     already used, persist it through the SAME PATCH, and report whether it is
+     safe to close. Unchanged placements are skipped inside persistItemPlacement
+     (isSamePlacement), so opening and closing the editor costs no request. */
+  async function commitPlacementOverride(itemId: string): Promise<boolean> {
+    if (placementCommitInProgress) return false;
+    const placement = parsePlacement(placementOverrides.get(itemId));
+    if (!placement) return true; // never changed / nothing valid to save
+    placementCommitInProgress = true;
+    try {
+      const saved = await persistItemPlacement(itemId, placement);
+      if (saved) {
+        // parsePlacement rounds to 4 decimals, so the stored value can differ
+        // from the raw session value. Re-seat the override on the exact value
+        // that was written: the session override and the database row stay
+        // byte-identical and the resolver can never render two different values.
+        placementOverrides.set(itemId, placement);
+      }
+      return saved;
+    } finally {
+      placementCommitInProgress = false;
+    }
   }
 
   function updatePlacementPanel() {
@@ -389,24 +466,47 @@ import ProfileTheme from "../components/ProfileTheme.astro";
   });
 
   placementResetButton?.addEventListener("click", () => {
-    if (!editingItemId) return;
-    placementOverrides.delete(editingItemId);
-    const item = selectedItems.find((entry) => entry.id === editingItemId);
-    const layer = placementLayerElement(editingItemId);
-    if (item && layer) applyLayerPlacement(item, layer);
-    updatePlacementPanel();
+    void (async () => {
+      if (!editingItemId) return;
+      const resetItemId = editingItemId;
+      placementOverrides.delete(resetItemId);
+      const item = selectedItems.find((entry) => entry.id === resetItemId);
+      const layer = placementLayerElement(resetItemId);
+      // RESET is permanent: start the placement=null write while the previous
+      // stored value is still known to persistItemPlacement, then clear the
+      // local value so the existing defaults render immediately. The clothing
+      // item itself is never touched. The write is awaited (it never rejects),
+      // but the local reset stays synchronous so the visible order is unchanged.
+      const persisted = persistItemPlacement(resetItemId, null);
+      if (item) item.placement = null;
+      if (item && layer) applyLayerPlacement(item, layer);
+      updatePlacementPanel();
+      await persisted;
+    })();
   });
 
   placementDoneButton?.addEventListener("click", () => {
-    closePlacementEditor();
-    renderCurrentOutfit();
+    void (async () => {
+      if (!editingItemId || placementCommitInProgress) return;
+      const completedItemId = editingItemId;
+      // Await the write BEFORE closing: a failed PATCH must not be hidden by
+      // an editor that simply disappears (the session placement stays intact).
+      const saved = await commitPlacementOverride(completedItemId);
+      if (!saved) return;
+      closePlacementEditor();
+      renderCurrentOutfit();
+    })();
   });
 
   /* Live drag of the ACTIVE layer. Deltas are converted to canvas percent
      (the layer img is exactly the canvas box, so translate() percentages
      map 1:1 to canvas movement). Uniform scale() in CSS guarantees the
      aspect ratio can never break. Only the editing layer has pointer
-     events, so dragging can never reorder or touch other layers. */
+     events, so dragging can never reorder or touch other layers.
+     Mouse, pen and touch all run through this one Pointer Events path;
+     touch-action:none on the editing layer (stylesheet) keeps the browser
+     from turning the drag into a page scroll, exactly one active pointer id
+     steers the drag, so a second finger can never jump the garment. */
   type PlacementDrag = {
     pointerId: number;
     layer: HTMLElement;
@@ -418,6 +518,24 @@ import ProfileTheme from "../components/ProfileTheme.astro";
   };
   let placementDrag: PlacementDrag | null = null;
 
+  /* Gesture inputs that feed the SAME placement.scale the scale slider writes
+     (desktop = hold LEFT button on the active item + wheel; mobile = pinch
+     with two fingers that both begin on the active item). There is no zoom
+     state: every path below goes through setPlacementOverride, so one
+     placement value, one clamp, one persistence flow (DONE -> PATCH).
+     pinchPointers holds live positions of pointers that began ON the active
+     editing layer; placementPinch is set once two of them are down. */
+  type PlacementPinch = {
+    ids: number[];
+    startDistance: number;
+    startScale: number;
+  };
+  let placementPinch: PlacementPinch | null = null;
+  const pinchPointers = new Map<number, { x: number; y: number }>();
+  // True once the wheel has scaled during the current left-button hold so
+  // pointer jitter cannot shift x/y while the user is wheel-scaling.
+  let wheelScaleActive = false;
+
   wardrobeModel.addEventListener("pointerdown", (event) => {
     if (event.button !== 0 || !editingItemId) return;
     const target = event.target instanceof Element ? event.target : null;
@@ -425,6 +543,36 @@ import ProfileTheme from "../components/ProfileTheme.astro";
     const layersElement = wardrobeModel.querySelector<HTMLElement>(".dressed-clothing-layers");
     const item = selectedItems.find((entry) => entry.id === editingItemId);
     if (!layer || !layersElement || !item) return;
+    // Track pointers that begin ON the active item — the mobile pinch only
+    // considers pointers that started on the editing layer.
+    if (!placementPinch && pinchPointers.size < 2 && !pinchPointers.has(event.pointerId)) {
+      pinchPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    }
+    if (!placementPinch && pinchPointers.size === 2) {
+      const [first, second] = Array.from(pinchPointers.values());
+      const distance = Math.hypot(second.x - first.x, second.y - first.y);
+      if (distance > 0) {
+        // Two fingers on the item = pinch. It only ever writes { scale }:
+        // setPlacementOverride merges into the current placement, so x, y,
+        // anchor and layer/z-index stay untouched and the shared
+        // PLACEMENT_SCALE_MIN..MAX clamp applies.
+        placementPinch = {
+          ids: Array.from(pinchPointers.keys()),
+          startDistance: distance,
+          startScale: resolveLayerPlacement(item).scale,
+        };
+        if (placementDrag) {
+          // One gesture at a time: stop the single-finger drag. The finger
+          // keeps its pointer capture until it lifts, so no lostpointercapture
+          // fires here and the pinch is not cancelled immediately.
+          placementDrag.layer.classList.remove("is-dragging");
+          placementDrag = null;
+        }
+        event.preventDefault();
+        return;
+      }
+    }
+    if (placementDrag || placementPinch) return;
     const current = resolveLayerPlacement(item);
     placementDrag = {
       pointerId: event.pointerId,
@@ -436,12 +584,33 @@ import ProfileTheme from "../components/ProfileTheme.astro";
       rect: layersElement.getBoundingClientRect(),
     };
     layer.classList.add("is-dragging");
-    layer.setPointerCapture(event.pointerId);
+    try {
+      layer.setPointerCapture(event.pointerId);
+    } catch {
+      // Capture is best-effort; the bubbling handlers below still drive the drag.
+    }
     event.preventDefault();
   });
 
   wardrobeModel.addEventListener("pointermove", (event) => {
-    if (!placementDrag || event.pointerId !== placementDrag.pointerId || !editingItemId) return;
+    if (pinchPointers.has(event.pointerId)) {
+      pinchPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    }
+    if (placementPinch) {
+      if (!editingItemId || placementPinch.ids.indexOf(event.pointerId) === -1) return;
+      const first = pinchPointers.get(placementPinch.ids[0]);
+      const second = pinchPointers.get(placementPinch.ids[1]);
+      if (!first || !second) return;
+      const distance = Math.hypot(second.x - first.x, second.y - first.y);
+      if (distance <= 0) return;
+      // Distance ratio scales placement.scale ONLY — x, y, anchor and layer
+      // are never patched here, and the shared clamp lives in setPlacementOverride.
+      setPlacementOverride(editingItemId, {
+        scale: placementPinch.startScale * (distance / placementPinch.startDistance),
+      });
+      return;
+    }
+    if (!placementDrag || event.pointerId !== placementDrag.pointerId || !editingItemId || wheelScaleActive) return;
     const { rect, startClientX, startClientY, startX, startY } = placementDrag;
     if (rect.width <= 0 || rect.height <= 0) return;
     const deltaX = ((event.clientX - startClientX) / rect.width) * 100;
@@ -451,11 +620,63 @@ import ProfileTheme from "../components/ProfileTheme.astro";
 
   const endPlacementDrag = (event: PointerEvent) => {
     if (!placementDrag || event.pointerId !== placementDrag.pointerId) return;
+    try {
+      placementDrag.layer.releasePointerCapture(event.pointerId);
+    } catch {
+      // The browser may have already released the capture (pointercancel).
+    }
     placementDrag.layer.classList.remove("is-dragging");
     placementDrag = null;
   };
-  wardrobeModel.addEventListener("pointerup", endPlacementDrag);
-  wardrobeModel.addEventListener("pointercancel", endPlacementDrag);
+  const endPlacementPointer = (event: PointerEvent) => {
+    endPlacementDrag(event);
+    if (pinchPointers.has(event.pointerId)) pinchPointers.delete(event.pointerId);
+    if (
+      placementPinch &&
+      (placementPinch.ids.indexOf(event.pointerId) >= 0 || pinchPointers.size < 2)
+    ) {
+      // the pinch ends as soon as either finger lifts
+      placementPinch = null;
+    }
+    wheelScaleActive = false;
+  };
+  wardrobeModel.addEventListener("pointerup", endPlacementPointer);
+  wardrobeModel.addEventListener("pointercancel", endPlacementPointer);
+  // A re-render or an implicit browser release drops the capture without a
+  // pointerup; clearing through this event keeps the drag state consistent.
+  wardrobeModel.addEventListener("lostpointercapture", endPlacementPointer);
+
+  /* Desktop wheel = the SAME placement.scale the scale slider writes. It only
+     engages while the LEFT button is held ON the active item (placementDrag is
+     set exactly when the press began on the editing layer) and only when the
+     wheel cursor is over that item. Wheel without the button — or anywhere
+     outside the active item — keeps normal browser behaviour: preventDefault()
+     runs only on the branch we handle. No zoom/canvas state exists; DONE
+     persists through the existing placement PATCH. */
+  const WHEEL_SCALE_RATE = 0.0005; // scale per wheel pixel: a ~100px notch ≈ 0.05
+  wardrobeModel.addEventListener(
+    "wheel",
+    (event) => {
+      if (!placementDrag || !editingItemId) return;
+      const target = event.target instanceof Element ? event.target : null;
+      if (!target?.closest(".dressed-clothing-layer--editing")) return;
+      if (event.deltaY === 0) return;
+      const item = selectedItems.find((entry) => entry.id === editingItemId);
+      if (!item) return;
+      event.preventDefault(); // only the handled case consumes the wheel
+      wheelScaleActive = true; // pointer jitter must not shift x/y during the hold
+      const delta =
+        event.deltaMode === 1 ? event.deltaY * 16
+        : event.deltaMode === 2 ? event.deltaY * 400
+        : event.deltaY;
+      // wheel up (deltaY < 0) = larger; the shared clamp lives below in
+      // setPlacementOverride (PLACEMENT_SCALE_MIN..MAX).
+      setPlacementOverride(editingItemId, {
+        scale: resolveLayerPlacement(item).scale - delta * WHEEL_SCALE_RATE,
+      });
+    },
+    { passive: false }
+  );
 
   function isSafeImage(value: string) {
     return value.startsWith("data:image/") ||
@@ -692,8 +913,17 @@ import ProfileTheme from "../components/ProfileTheme.astro";
       adjustButton.setAttribute("aria-label", `Adjust placement of ${item.name}`);
       adjustButton.addEventListener("click", () => {
         if (editingItemId === item.id) {
-          closePlacementEditor();
-          renderCurrentOutfit();
+          // Closing through the ADJUST toggle commits the pending placement
+          // first (same helper and same PATCH as DONE), so an adjustment that
+          // is closed here is persisted instead of silently session-only.
+          void (async () => {
+            if (placementCommitInProgress) return;
+            const closingItemId = item.id;
+            const saved = await commitPlacementOverride(closingItemId);
+            if (!saved) return; // keep the editor and the session placement open
+            closePlacementEditor();
+            renderCurrentOutfit();
+          })();
         } else {
           openPlacementEditor(item.id);
         }
@@ -983,6 +1213,7 @@ import ProfileTheme from "../components/ProfileTheme.astro";
       aiReadyAssets: stored.aiReadyAssets,
       originalPath: stored.originalPath ?? undefined,
       originalPreviewUrl: stored.originalPreviewUrl ?? undefined,
+      placement: stored.placement ?? null,
     }));
     selectedItems = selectedItems.filter((selected) =>
       clothingItems.some((item) => item.id === selected.id)

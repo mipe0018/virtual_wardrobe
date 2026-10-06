@@ -2,7 +2,8 @@ import {
   CURRENT_CLOTHING_ASSET_VERSION,
   type ClothingBaseType,
 } from "../shared/clothing-assets";
-import { clothingPlacement, dressedAnchor } from "../shared/clothing-categories";
+import { dressedAnchor } from "../shared/clothing-categories";
+import { resolveItemPlacement } from "../shared/clothing-placement";
 import {
   loadPersistentWardrobe,
   loadSavedDressedOutfits,
@@ -31,7 +32,13 @@ function renderLayers(
     layer.src = asset.previewUrl;
     layer.alt = "";
     layer.style.zIndex = String(index + 1);
-    const placement = clothingPlacement(item.category);
+    // Same shared resolver as DRESSED: persisted item placement first, then
+    // the existing category defaults, so Profile always shows what the
+    // wardrobe shows for the same clothing item.
+    const placement = resolveItemPlacement({
+      category: item.category,
+      persistedPlacement: item.placement,
+    });
     const anchor = dressedAnchor(placement.anchor, baseType);
     layer.style.setProperty("--anchor-x", String(anchor.x));
     layer.style.setProperty("--anchor-y", String(anchor.y));
