@@ -613,11 +613,17 @@ body.profile-page-shell {
   inset: 0;
   object-fit: contain;
   object-position: center;
+  /* Same effective X/Y scaling as DRESSED: legacy items get
+     --clothing-scale-x = --clothing-scale-y = --clothing-scale and render
+     exactly as the old single-value scale() did. */
   --clothing-base-scale: 1;
   transform-origin: calc(var(--anchor-x, 0.5) * 100%) calc(var(--anchor-y, 0.2) * 100%);
   transform:
     translate(var(--clothing-x, 0%), var(--clothing-y, 0%))
-    scale(calc(var(--clothing-base-scale) * var(--clothing-scale, 1)));
+    scale(
+      calc(var(--clothing-base-scale) * var(--clothing-scale-x, var(--clothing-scale, 1))),
+      calc(var(--clothing-base-scale) * var(--clothing-scale-y, var(--clothing-scale, 1)))
+    );
 }
 .profile-outfits {
   display: grid;

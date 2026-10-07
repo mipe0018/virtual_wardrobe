@@ -93,8 +93,22 @@ import ProfileTheme from "../components/ProfileTheme.astro";
               <span>SIZE <small id="placement-scale-value">1.00x</small></span>
               <input id="placement-scale" type="range" min="0.4" max="2" step="0.01" value="1" />
             </label>
+            <label class="placement-field placement-free-toggle" for="placement-free">
+              <span>FREE SCALING</span>
+              <input id="placement-free" type="checkbox" />
+            </label>
+            <div class="placement-free-fields" id="placement-free-fields" hidden>
+              <label class="placement-field" for="placement-scale-x">
+                <span>WIDTH <small id="placement-scale-x-value">100%</small></span>
+                <input id="placement-scale-x" type="range" min="0.4" max="2" step="0.01" value="1" />
+              </label>
+              <label class="placement-field" for="placement-scale-y">
+                <span>HEIGHT <small id="placement-scale-y-value">100%</small></span>
+                <input id="placement-scale-y" type="range" min="0.4" max="2" step="0.01" value="1" />
+              </label>
+            </div>
             <small class="placement-readout" id="placement-readout"></small>
-            <p class="placement-hint">DRAG THE ITEM ON THE MODEL TO REPOSITION IT.</p>
+            <p class="placement-hint">TAP TO SELECT · DRAG TO MOVE · PINCH TO RESIZE</p>
             <div class="placement-actions">
               <button type="button" id="placement-reset">RESET</button>
               <button type="button" id="placement-done">DONE</button>
@@ -123,6 +137,8 @@ import ProfileTheme from "../components/ProfileTheme.astro";
     type DressedAnchor,
   } from "../lib/shared/clothing-categories";
   import {
+    effectiveScaleX,
+    effectiveScaleY,
     isSamePlacement,
     parsePlacement,
     resolveItemPlacement,
@@ -239,6 +255,10 @@ import ProfileTheme from "../components/ProfileTheme.astro";
     x: number;
     y: number;
     scale: number;
+    // Optional FREE-scaling axes. Contract: both or neither (validated by
+    // parsePlacement/sanitizePlacement) — legacy overrides simply omit them.
+    scaleX?: number;
+    scaleY?: number;
   };
 
   const PLACEMENT_SCALE_MIN = 0.4;
@@ -250,12 +270,23 @@ import ProfileTheme from "../components/ProfileTheme.astro";
   // One placement commit at a time, so a second tap (DONE or the ADJUST toggle)
   // can never start a duplicate PATCH while the first one is still in flight.
   let placementCommitInProgress = false;
+  // UI-only session state: which scaling controls the editor shows.
+  // NEVER persisted — the stored placement decides rendering; this only decides
+  // whether the editor shows the proportional SIZE slider or the FREE
+  // WIDTH/HEIGHT sliders for the item currently open.
+  let freeScale = false;
 
   const placementPanel = document.querySelector<HTMLElement>("#placement-panel");
   const placementTitle = document.querySelector<HTMLElement>("#placement-item-name");
   const placementAnchorSelect = document.querySelector<HTMLSelectElement>("#placement-anchor");
   const placementScaleInput = document.querySelector<HTMLInputElement>("#placement-scale");
   const placementScaleValue = document.querySelector<HTMLElement>("#placement-scale-value");
+  const placementFreeInput = document.querySelector<HTMLInputElement>("#placement-free");
+  const placementFreeFields = document.querySelector<HTMLElement>("#placement-free-fields");
+  const placementScaleXInput = document.querySelector<HTMLInputElement>("#placement-scale-x");
+  const placementScaleYInput = document.querySelector<HTMLInputElement>("#placement-scale-y");
+  const placementScaleXValue = document.querySelector<HTMLElement>("#placement-scale-x-value");
+  const placementScaleYValue = document.querySelector<HTMLElement>("#placement-scale-y-value");
   const placementReadout = document.querySelector<HTMLElement>("#placement-readout");
   const placementResetButton = document.querySelector<HTMLButtonElement>("#placement-reset");
   const placementDoneButton = document.querySelector<HTMLButtonElement>("#placement-done");
@@ -290,6 +321,10 @@ import ProfileTheme from "../components/ProfileTheme.astro";
     layer.style.setProperty("--anchor-x", String(anchorPoint.x));
     layer.style.setProperty("--anchor-y", String(anchorPoint.y));
     layer.style.setProperty("--clothing-scale", String(placement.scale));
+    // Effective X/Y axes: for legacy placements both equal placement.scale, so
+    // the CSS transform renders exactly as the old single-value scale().
+    layer.style.setProperty("--clothing-scale-x", String(effectiveScaleX(placement)));
+    layer.style.setProperty("--clothing-scale-y", String(effectiveScaleY(placement)));
     layer.style.setProperty("--clothing-x", `${placement.x}%`);
     layer.style.setProperty("--clothing-y", `${placement.y}%`);
     layer.classList.toggle("dressed-clothing-layer--editing", item.id === editingItemId);
@@ -302,6 +337,13 @@ import ProfileTheme from "../components/ProfileTheme.astro";
     next.scale = Math.min(PLACEMENT_SCALE_MAX, Math.max(PLACEMENT_SCALE_MIN, next.scale));
     next.x = Math.min(PLACEMENT_OFFSET_LIMIT, Math.max(-PLACEMENT_OFFSET_LIMIT, next.x));
     next.y = Math.min(PLACEMENT_OFFSET_LIMIT, Math.max(-PLACEMENT_OFFSET_LIMIT, next.y));
+    // FREE axes share the same clamp range as `scale` (spec §10).
+    if (next.scaleX !== undefined) {
+      next.scaleX = Math.min(PLACEMENT_SCALE_MAX, Math.max(PLACEMENT_SCALE_MIN, next.scaleX));
+    }
+    if (next.scaleY !== undefined) {
+      next.scaleY = Math.min(PLACEMENT_SCALE_MAX, Math.max(PLACEMENT_SCALE_MIN, next.scaleY));
+    }
     placementOverrides.set(itemId, next);
     const layer = placementLayerElement(itemId);
     if (layer) applyLayerPlacement(item, layer);
@@ -394,8 +436,23 @@ import ProfileTheme from "../components/ProfileTheme.astro";
     placementAnchorSelect.value = placement.anchor;
     placementScaleInput.value = String(placement.scale);
     placementScaleValue.textContent = `${placement.scale.toFixed(2)}x`;
-    placementReadout.textContent =
-      `X ${placement.x.toFixed(1)}%   Y ${placement.y.toFixed(1)}%   SIZE ${placement.scale.toFixed(2)}x`;
+    // FREE controls show the EFFECTIVE axes (scaleX ?? scale), so the sliders
+    // always reflect what actually renders — even before any axis override exists.
+    const effectiveX = effectiveScaleX(placement);
+    const effectiveY = effectiveScaleY(placement);
+    if (placementFreeInput) placementFreeInput.checked = freeScale;
+    if (placementFreeFields) placementFreeFields.hidden = !freeScale;
+    // SIZE slider is hidden in FREE mode (its `scale` would not affect rendering
+    // while axes exist); the SIZE label+value stays visible as the canonical
+    // proportional value that wheel/pinch still write (spec §3).
+    if (placementScaleXInput) placementScaleXInput.value = String(effectiveX);
+    if (placementScaleYInput) placementScaleYInput.value = String(effectiveY);
+    if (placementScaleXValue) placementScaleXValue.textContent = `${Math.round(effectiveX * 100)}%`;
+    if (placementScaleYValue) placementScaleYValue.textContent = `${Math.round(effectiveY * 100)}%`;
+    placementScaleInput.hidden = freeScale;
+    placementReadout.textContent = freeScale
+      ? `X ${placement.x.toFixed(1)}%   Y ${placement.y.toFixed(1)}%   W ${Math.round(effectiveX * 100)}% / H ${Math.round(effectiveY * 100)}%`
+      : `X ${placement.x.toFixed(1)}%   Y ${placement.y.toFixed(1)}%   SIZE ${placement.scale.toFixed(2)}x`;
   }
 
   function renderCharacterLayers() {
@@ -429,6 +486,11 @@ import ProfileTheme from "../components/ProfileTheme.astro";
   function openPlacementEditor(itemId: string) {
     if (!selectedItems.some((entry) => entry.id === itemId)) return;
     editingItemId = itemId;
+    // FREE controls follow the DATA (spec §9): an item stored with scaleX/scaleY
+    // reopens in FREE mode; a legacy 4-key item reopens proportional. Recomputed
+    // on every open — freeScale is session-only and never persisted.
+    const openedItem = selectedItems.find((entry) => entry.id === itemId);
+    freeScale = Boolean(openedItem && resolveLayerPlacement(openedItem).scaleX !== undefined);
     if (placementPanel) placementPanel.hidden = false;
     renderCurrentOutfit();
     renderCharacterLayers();
@@ -438,6 +500,7 @@ import ProfileTheme from "../components/ProfileTheme.astro";
   function closePlacementEditor() {
     const previousId = editingItemId;
     editingItemId = null;
+    freeScale = false;
     if (placementPanel) placementPanel.hidden = true;
     if (previousId) {
       placementLayerElement(previousId)?.classList.remove("dressed-clothing-layer--editing");
@@ -463,6 +526,66 @@ import ProfileTheme from "../components/ProfileTheme.astro";
     if (editingItemId) {
       setPlacementOverride(editingItemId, { scale: Number(placementScaleInput.value) });
     }
+  });
+
+  /* ---- FREE SCALING (spec §9–§11) --------------------------------------
+     freeScale is pure UI state: entering FREE writes NOTHING until a
+     WIDTH/HEIGHT slider actually moves, so toggling on/off without edits can
+     never produce a PATCH. Leaving FREE strips any axes from the session
+     override, so DONE saves the legacy {anchor,x,y,scale} form and rendering
+     falls back to proportional (spec §10). */
+  placementFreeInput?.addEventListener("change", () => {
+    if (!editingItemId) {
+      placementFreeInput.checked = false;
+      freeScale = false;
+      return;
+    }
+    const itemId = editingItemId;
+    const item = selectedItems.find((entry) => entry.id === itemId);
+    if (!item) return;
+    freeScale = placementFreeInput.checked;
+    if (!freeScale) {
+      const current = resolveLayerPlacement(item);
+      if (current.scaleX !== undefined || current.scaleY !== undefined) {
+        // Drop BOTH axes, keep anchor/x/y/scale untouched. Writing the full
+        // object (instead of merging) is what removes the axis keys.
+        placementOverrides.set(itemId, {
+          anchor: current.anchor,
+          x: current.x,
+          y: current.y,
+          scale: current.scale,
+        });
+        const layer = placementLayerElement(itemId);
+        if (layer) applyLayerPlacement(item, layer);
+      }
+      // No axes anywhere → no override is created → DONE stays a no-op.
+    }
+    updatePlacementPanel();
+  });
+
+  /* WIDTH/HEIGHT always write BOTH axes together (contract: never a single
+     axis alone). The untouched axis keeps its current EFFECTIVE value, so
+     moving WIDTH alone leaves the visible height unchanged. */
+  placementScaleXInput?.addEventListener("input", () => {
+    if (!editingItemId || !freeScale) return;
+    const item = selectedItems.find((entry) => entry.id === editingItemId);
+    if (!item) return;
+    const current = resolveLayerPlacement(item);
+    setPlacementOverride(editingItemId, {
+      scaleX: Number(placementScaleXInput.value),
+      scaleY: current.scaleY ?? current.scale,
+    });
+  });
+
+  placementScaleYInput?.addEventListener("input", () => {
+    if (!editingItemId || !freeScale) return;
+    const item = selectedItems.find((entry) => entry.id === editingItemId);
+    if (!item) return;
+    const current = resolveLayerPlacement(item);
+    setPlacementOverride(editingItemId, {
+      scaleY: Number(placementScaleYInput.value),
+      scaleX: current.scaleX ?? current.scale,
+    });
   });
 
   placementResetButton?.addEventListener("click", () => {
@@ -536,8 +659,66 @@ import ProfileTheme from "../components/ProfileTheme.astro";
   // pointer jitter cannot shift x/y while the user is wheel-scaling.
   let wheelScaleActive = false;
 
+  /* ---- TAP-TO-SELECT (spec §14–§16: TAP = SELECT, DRAG = MOVE) -----------
+     Single-item selection reuses editingItemId — there is NO second selection
+     state. The pointer-events model is deliberately UNCHANGED: only the
+     --editing layer receives events, so drag/pinch keep working even when
+     another garment box overlaps the selected one (making every layer
+     pointer-events:auto would let the topmost full-canvas box swallow the
+     presses meant for the selected layer underneath — §17 answered: not safe).
+     Instead the garment under a press is found by a manual topmost-box test,
+     and the candidate is committed ONLY on pointerup with ≤ TAP_SLOP_PX
+     movement: a real drag or a page scroll cancels it, and a second finger
+     turns the gesture into a non-tap. Nothing here calls preventDefault,
+     setPointerCapture or starts a drag/pinch. */
+  type PlacementTapCandidate = {
+    pointerId: number;
+    x: number;
+    y: number;
+    itemId: string | null;
+    valid: boolean;
+  };
+  let tapCandidate: PlacementTapCandidate | null = null;
+  const TAP_SLOP_PX = 8; // beyond this a press is a drag/scroll, never a tap
+
+  /* Topmost garment box containing the point. Layers are appended in
+     z-index order (index + 1), so testing from the END finds the visually
+     topmost layer first. Boxes are the transformed layer boxes — items behind
+     the topmost one are selected through the existing outfit list (§19). */
+  function clothingLayerAtPoint(clientX: number, clientY: number): string | null {
+    const layers = wardrobeModel.querySelectorAll<HTMLElement>(".dressed-clothing-layer");
+    for (let index = layers.length - 1; index >= 0; index -= 1) {
+      const layer = layers.item(index);
+      if (!layer) continue;
+      const rect = layer.getBoundingClientRect();
+      if (
+        clientX >= rect.left &&
+        clientX <= rect.right &&
+        clientY >= rect.top &&
+        clientY <= rect.bottom
+      ) {
+        return layer.dataset.itemId ?? null;
+      }
+    }
+    return null;
+  }
+
   wardrobeModel.addEventListener("pointerdown", (event) => {
-    if (event.button !== 0 || !editingItemId) return;
+    if (event.button !== 0) return;
+    // Record a tap-to-select candidate for EVERY press on the model. It is
+    // committed on pointerup only (see endPlacementPointer) and cancelled by
+    // movement > TAP_SLOP_PX. A second finger simply overwrites the candidate:
+    // the first finger's pointerup then fails the pointerId match (no select),
+    // and any pinch movement invalidates the survivor. This branch never calls
+    // preventDefault and never touches placementDrag/pinchPointers.
+    tapCandidate = {
+      pointerId: event.pointerId,
+      x: event.clientX,
+      y: event.clientY,
+      itemId: clothingLayerAtPoint(event.clientX, event.clientY),
+      valid: true,
+    };
+    if (!editingItemId) return;
     const target = event.target instanceof Element ? event.target : null;
     const layer = target?.closest<HTMLElement>(".dressed-clothing-layer--editing");
     const layersElement = wardrobeModel.querySelector<HTMLElement>(".dressed-clothing-layers");
@@ -593,6 +774,12 @@ import ProfileTheme from "../components/ProfileTheme.astro";
   });
 
   wardrobeModel.addEventListener("pointermove", (event) => {
+    // Any real movement cancels the tap-to-select candidate: a drag or a page
+    // scroll must never change the selection (TAP = SELECT, DRAG = MOVE).
+    if (tapCandidate && tapCandidate.valid && tapCandidate.pointerId === event.pointerId) {
+      const moved = Math.hypot(event.clientX - tapCandidate.x, event.clientY - tapCandidate.y);
+      if (moved > TAP_SLOP_PX) tapCandidate.valid = false;
+    }
     if (pinchPointers.has(event.pointerId)) {
       pinchPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
     }
@@ -629,6 +816,46 @@ import ProfileTheme from "../components/ProfileTheme.astro";
     placementDrag = null;
   };
   const endPlacementPointer = (event: PointerEvent) => {
+    // Snapshot the tap candidate BEFORE any cleanup and commit it FIRST: the
+    // drag cleanup below can re-enter this handler (releasing pointer capture
+    // or re-rendering layers fires lostpointercapture), and by then the
+    // candidate is already consumed. pointercancel / lostpointercapture /
+    // moved-too-far / second finger / wheel-scale all leave the candidate
+    // invalid or unmatched, so a drag, a pinch, a wheel gesture or a page
+    // scroll can never change the selection.
+    const candidate = tapCandidate;
+    tapCandidate = null;
+    const wasWheelScaling = wheelScaleActive;
+    const dragStart =
+      placementDrag && placementDrag.pointerId === event.pointerId
+        ? { itemId: editingItemId, x: placementDrag.startX, y: placementDrag.startY }
+        : null;
+    if (
+      event.type === "pointerup" &&
+      candidate &&
+      candidate.valid &&
+      candidate.pointerId === event.pointerId &&
+      candidate.itemId &&
+      candidate.itemId !== editingItemId &&
+      !wasWheelScaling &&
+      Math.hypot(event.clientX - candidate.x, event.clientY - candidate.y) <= TAP_SLOP_PX
+    ) {
+      // A tap that also armed a (sub-slop) drag must not leave pointer jitter
+      // behind on the item we are deselecting: restore its pre-press x/y.
+      if (dragStart && dragStart.itemId) {
+        const previous = selectedItems.find((entry) => entry.id === dragStart.itemId);
+        if (previous) {
+          const current = resolveLayerPlacement(previous);
+          if (current.x !== dragStart.x || current.y !== dragStart.y) {
+            setPlacementOverride(dragStart.itemId, { x: dragStart.x, y: dragStart.y });
+          }
+        }
+      }
+      // editingItemId is the ONLY selection state — this just re-opens the
+      // editor for the garment under the tap (same mechanism as the ADJUST
+      // button in the outfit list).
+      openPlacementEditor(candidate.itemId);
+    }
     endPlacementDrag(event);
     if (pinchPointers.has(event.pointerId)) pinchPointers.delete(event.pointerId);
     if (

@@ -3,7 +3,11 @@ import {
   type ClothingBaseType,
 } from "../shared/clothing-assets";
 import { dressedAnchor } from "../shared/clothing-categories";
-import { resolveItemPlacement } from "../shared/clothing-placement";
+import {
+  effectiveScaleX,
+  effectiveScaleY,
+  resolveItemPlacement,
+} from "../shared/clothing-placement";
 import {
   loadPersistentWardrobe,
   loadSavedDressedOutfits,
@@ -43,6 +47,10 @@ function renderLayers(
     layer.style.setProperty("--anchor-x", String(anchor.x));
     layer.style.setProperty("--anchor-y", String(anchor.y));
     layer.style.setProperty("--clothing-scale", String(placement.scale));
+    // Effective X/Y axes: for legacy placements both equal placement.scale, so
+    // the render is identical to before FREE scaling existed.
+    layer.style.setProperty("--clothing-scale-x", String(effectiveScaleX(placement)));
+    layer.style.setProperty("--clothing-scale-y", String(effectiveScaleY(placement)));
     layer.style.setProperty("--clothing-x", `${placement.x}%`);
     layer.style.setProperty("--clothing-y", `${placement.y}%`);
     layers.appendChild(layer);

@@ -183,7 +183,7 @@ export const PATCH: APIRoute = async ({ params, request }) => {
       return Response.json(
         {
           error:
-            "Placement must be {anchor,x,y,scale} with a known anchor and values inside the editor limits.",
+            "Placement must be {anchor,x,y,scale} (optionally with scaleX+scaleY together) with a known anchor and values inside the editor limits.",
         },
         { status: 400 }
       );

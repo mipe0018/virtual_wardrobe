@@ -640,16 +640,22 @@
 .wardrobe-model .dressed-clothing-layer {
   object-fit: contain;
   /*
-   * Anchor-based placement. The layer is scaled uniformly around its category
-   * anchor (--anchor-x/y, canvas fractions), so the anchor stays fixed on the model.
-   * Category x/y offsets are applied on top. A single uniform scale() is used,
-   * so garments are never stretched.
+   * Anchor-based placement. The layer is scaled around its category anchor
+   * (--anchor-x/y, canvas fractions), so the anchor stays fixed on the model.
+   * Category x/y offsets are applied on top.
+   * --clothing-scale-x/y are the EFFECTIVE axes (scaleX ?? scale / scaleY ?? scale),
+   * so legacy items (both = scale) render identically to the old single-value
+   * scale(), while FREE-scaled items stretch per axis. The var() fallbacks keep
+   * the transform correct even before the JS has written the new variables.
    */
   --clothing-base-scale: var(--dressed-clothing-scale, 1);
   transform-origin: calc(var(--anchor-x, 0.5) * 100%) calc(var(--anchor-y, 0.2) * 100%);
   transform:
     translate(var(--clothing-x, 0%), var(--clothing-y, 0%))
-    scale(calc(var(--clothing-base-scale) * var(--clothing-scale, 1)));
+    scale(
+      calc(var(--clothing-base-scale) * var(--clothing-scale-x, var(--clothing-scale, 1))),
+      calc(var(--clothing-base-scale) * var(--clothing-scale-y, var(--clothing-scale, 1)))
+    );
 }
 
 /* ========================================
@@ -986,12 +992,42 @@
 .placement-actions button {
   flex: 1;
   padding: 0.4rem 0.5rem;
+  /* Touch target (spec §23): the buttons stay in the same row/layout but get
+     a thumb-reachable height on phones. */
+  min-height: 2.25rem;
   border: 1px solid var(--border);
   background: var(--white);
   color: var(--grey-900);
   font: inherit;
   font-size: 0.6rem;
   cursor: pointer;
+}
+
+/* FREE scaling (spec §11): additive controls inside the same panel — the
+   checkbox row plus the WIDTH/HEIGHT field group, hidden by default via the
+   [hidden] attribute (an explicit rule is required because the class sets
+   display, which would otherwise beat the UA rule for [hidden]). */
+.placement-field.placement-free-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.placement-free-toggle input[type="checkbox"] {
+  width: 0.95rem;
+  height: 0.95rem;
+  margin: 0;
+  accent-color: var(--pink-500);
+}
+
+.placement-free-fields {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.placement-free-fields[hidden] {
+  display: none;
 }
 
 .placement-actions button:focus-visible,
@@ -1024,7 +1060,8 @@
    Native long-press gestures on <img> (iOS callout, Android context menu,
    image drag) cancel the pointer stream on real devices — they are
    suppressed on the edited layer only. Desktop mouse behaviour is
-   unaffected. */
+   unaffected. The drop-shadow (doubled for tap-to-select visibility, spec §18)
+   follows the garment's alpha/silhouette — never the 2:3 canvas rectangle. */
 .dressed-clothing-layer--editing {
   pointer-events: auto;
   cursor: grab;
@@ -1033,7 +1070,7 @@
   -webkit-user-select: none;
   user-select: none;
   -webkit-user-drag: none;
-  filter: drop-shadow(0 0 3px var(--pink-500));
+  filter: drop-shadow(0 0 3px var(--pink-500)) drop-shadow(0 0 7px var(--pink-500));
 }
 
 .dressed-clothing-layer--editing.is-dragging {
