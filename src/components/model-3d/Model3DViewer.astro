@@ -1,0 +1,230 @@
+---
+/**
+ * Model3DViewer — isolated experimental 3D shell (POC).
+ * Markup + dev controls only; all Three.js work lives in lib/client/three.
+ */
+---
+
+<div class="m3d" data-m3d>
+  <div class="m3d-stage" id="m3d-host" aria-label="3D model stage"></div>
+
+  <div class="m3d-bar">
+    <span class="m3d-status" id="m3d-status" data-kind="info">STARTING…</span>
+    <span class="m3d-readout" id="m3d-yaw-readout">YAW 0°</span>
+  </div>
+
+  <div class="m3d-panel">
+    <label class="m3d-field">
+      <span>MODEL YAW (°)</span>
+      <input id="m3d-yaw" type="range" min="-180" max="180" step="1" value="0" />
+    </label>
+
+    <div class="m3d-views" role="group" aria-label="Snap views">
+      <button type="button" data-m3d-view="front">FRONT</button>
+      <button type="button" data-m3d-view="right">RIGHT ▸</button>
+      <button type="button" data-m3d-view="back">BACK</button>
+      <button type="button" data-m3d-view="left">◂ LEFT</button>
+    </div>
+
+    <label class="m3d-field">
+      <span>TEST ANCHOR</span>
+      <select id="m3d-anchor"></select>
+    </label>
+
+    <label class="m3d-field">
+      <span>DEPTH w (m) — local +Z of anchor</span>
+      <input id="m3d-depth" type="range" min="-0.25" max="0.25" step="0.005" value="0.14" />
+      <small id="m3d-depth-readout">w = +0.140 m</small>
+    </label>
+
+    <div class="m3d-views" role="group" aria-label="Lifecycle tests">
+      <button type="button" id="m3d-recreate">DISPOSE + RECREATE</button>
+    </div>
+  </div>
+
+  <p class="m3d-hint">
+    DRAG THE MODEL TO ROTATE · PINCH / WHEEL TO ZOOM · the orange cube is a
+    child of the active anchor — its <code>w</code> offset moves it along the
+    anchor's local +Z and it rotates with the model.
+  </p>
+</div>
+
+<script>
+  import {
+    createModel3DViewer,
+    type Model3DViewerHandle,
+  } from "../../lib/client/three/viewer";
+  import {
+    DRESSED_3D_POC_ANCHOR_NAMES,
+    type Dressed3dAnchorName,
+  } from "../../lib/shared/dressed-3d-contract";
+
+  const host = document.querySelector<HTMLElement>("#m3d-host");
+  const statusEl = document.querySelector<HTMLElement>("#m3d-status");
+  const yawSlider = document.querySelector<HTMLInputElement>("#m3d-yaw");
+  const yawReadout = document.querySelector<HTMLElement>("#m3d-yaw-readout");
+  const anchorSelect = document.querySelector<HTMLSelectElement>("#m3d-anchor");
+  const depthSlider = document.querySelector<HTMLInputElement>("#m3d-depth");
+  const depthReadout =
+    document.querySelector<HTMLElement>("#m3d-depth-readout");
+  const recreateButton =
+    document.querySelector<HTMLButtonElement>("#m3d-recreate");
+
+  let handle: Model3DViewerHandle | null = null;
+
+  // Populate the anchor select from the contract vocabulary.
+  anchorSelect?.replaceChildren(
+    ...DRESSED_3D_POC_ANCHOR_NAMES.map((name) => {
+      const option = document.createElement("option");
+      option.value = name;
+      option.textContent = name.toUpperCase();
+      return option;
+    })
+  );
+
+  function syncYaw(degrees: number): void {
+    const rounded = Math.round(degrees);
+    if (yawSlider) yawSlider.value = String(rounded);
+    if (yawReadout) yawReadout.textContent = `YAW ${rounded}°`;
+  }
+
+  function syncDepth(meters: number): void {
+    if (depthSlider) depthSlider.value = String(meters);
+    if (depthReadout) {
+      const sign = meters >= 0 ? "+" : "";
+      depthReadout.textContent = `w = ${sign}${meters.toFixed(3)} m`;
+    }
+  }
+
+  async function mount(): Promise<void> {
+    if (!host) return;
+    handle?.dispose(); // idempotent; single-context guard enforces this too
+    handle = await createModel3DViewer(host, {
+      onStatus: (status) => {
+        if (!statusEl) return;
+        statusEl.textContent = status.text;
+        statusEl.dataset.kind = status.kind;
+      },
+      onYawChange: syncYaw,
+    });
+    syncYaw(handle.getYawDegrees());
+    syncDepth(handle.getDepthMeters());
+    if (anchorSelect) anchorSelect.value = handle.getActiveAnchor();
+  }
+
+  yawSlider?.addEventListener("input", () => {
+    handle?.setYawDegrees(Number(yawSlider.value));
+    syncYaw(Number(yawSlider.value));
+  });
+
+  depthSlider?.addEventListener("input", () => {
+    handle?.setDepthMeters(Number(depthSlider.value));
+    syncDepth(Number(depthSlider.value));
+  });
+
+  anchorSelect?.addEventListener("change", () => {
+    handle?.setActiveAnchor(anchorSelect.value as Dressed3dAnchorName);
+  });
+
+  document
+    .querySelectorAll<HTMLButtonElement>("[data-m3d-view]")
+    .forEach((button) => {
+      button.addEventListener("click", () => {
+        const view = button.dataset.m3dView as
+          | "front"
+          | "right"
+          | "back"
+          | "left";
+        handle?.snapToView(view);
+        syncYaw(handle?.getYawDegrees() ?? 0);
+      });
+    });
+
+  recreateButton?.addEventListener("click", () => {
+    void mount();
+  });
+
+  void mount();
+</script>
+
+<style>
+  .m3d {
+    display: grid;
+    gap: 0.75rem;
+    color: #e8e8f0;
+    font-family: "DM Mono", monospace;
+  }
+  .m3d-stage {
+    position: relative;
+    width: 100%;
+    height: min(62vh, 560px);
+    min-height: 320px;
+    border: 2px solid #3a3a4a;
+    background: #11131c;
+    overflow: hidden;
+  }
+  .m3d-bar {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.5rem;
+    font-size: 0.8rem;
+    letter-spacing: 0.04em;
+  }
+  .m3d-status[data-kind="ready"] { color: #3dff88; }
+  .m3d-status[data-kind="error"] { color: #ff5a5a; }
+  .m3d-status[data-kind="info"] { color: #35d0ff; }
+  .m3d-readout { color: #ffd23f; }
+  .m3d-panel {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 0.75rem;
+    padding: 0.75rem;
+    border: 1px solid #3a3a4a;
+    background: #171a26;
+  }
+  .m3d-field {
+    display: grid;
+    gap: 0.35rem;
+    font-size: 0.72rem;
+    letter-spacing: 0.06em;
+    color: #a9a9c0;
+  }
+  .m3d-field input[type="range"] { width: 100%; accent-color: #ff8c1a; }
+  .m3d-field select {
+    background: #11131c;
+    color: #e8e8f0;
+    border: 1px solid #3a3a4a;
+    padding: 0.35rem;
+    font-family: inherit;
+  }
+  .m3d-field small { color: #ff8c1a; }
+  .m3d-views {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    align-content: start;
+  }
+  .m3d-views button {
+    font-family: inherit;
+    font-size: 0.72rem;
+    letter-spacing: 0.06em;
+    padding: 0.45rem 0.6rem;
+    background: #232637;
+    color: #e8e8f0;
+    border: 1px solid #3a3a4a;
+    cursor: pointer;
+  }
+  .m3d-views button:hover { background: #2e3247; }
+  .m3d-hint {
+    font-size: 0.75rem;
+    color: #a9a9c0;
+    line-height: 1.5;
+    margin: 0;
+  }
+  .m3d-hint code { color: #ff8c1a; }
+  @media (max-width: 640px) {
+    .m3d-stage { height: min(55vh, 420px); }
+  }
+</style>
+
+

@@ -1,0 +1,79 @@
+---
+import Layout from "../layouts/Layout.astro";
+import Model3DViewer from "../components/model-3d/Model3DViewer.astro";
+import { DRESSED_3D_CONTRACT_VERSION } from "../lib/shared/dressed-3d-contract";
+
+/**
+ * /model-3d — ISOLATED experimental 3D proof-of-concept.
+ *
+ * Not linked into the wardrobe. No authentication changes, no database, no
+ * AI, no clothing pipeline. Proves: Three.js inside Astro · GLB load ·
+ * Y-up/+Z coordinate contract · model yaw rotation · anchor markers ·
+ * local depth (future clothing `w`) · resize · dispose/recreate.
+ *
+ * The existing 2D wardrobe renderer is completely untouched by this page.
+ */
+---
+
+<Layout title="DRESSED — 3D POC (Experimental)" header="public">
+  <section class="m3d-page">
+    <header class="m3d-page-header">
+      <h1>DRESSED 3D — PROOF OF CONCEPT</h1>
+      <p class="m3d-badge">
+        EXPERIMENTAL DEVELOPMENT VIEW · contract {DRESSED_3D_CONTRACT_VERSION}
+        · NOT part of the wardrobe · no AI · no database
+      </p>
+      <p class="m3d-lead">
+        Isolated test of the future 3D model-view runtime: glTF <strong>Y-up</strong>,
+        meters, model faces <strong>+Z</strong>, one yaw value rotates the model
+        (camera framing is never persisted), semantic anchors exist independent
+        of the mesh, and the depth slider moves a probe along an anchor's local
+        +Z — the future clothing <code>w</code> / shell offset.
+      </p>
+    </header>
+
+    <Model3DViewer />
+
+    <p class="m3d-page-footer">
+      <a href="/wardrobe">← BACK TO THE 2D WARDROBE (unchanged)</a>
+    </p>
+  </section>
+</Layout>
+
+<style>
+  .m3d-page {
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 1.5rem 1rem 3rem;
+  }
+  .m3d-page-header h1 {
+    font-size: 1.15rem;
+    letter-spacing: 0.08em;
+    margin: 0 0 0.5rem;
+  }
+  .m3d-badge {
+    display: inline-block;
+    font-family: "DM Mono", monospace;
+    font-size: 0.68rem;
+    letter-spacing: 0.05em;
+    color: #11131c;
+    background: #ffd23f;
+    padding: 0.3rem 0.5rem;
+    margin: 0 0 0.75rem;
+  }
+  .m3d-lead {
+    font-size: 0.85rem;
+    line-height: 1.6;
+    color: #a9a9c0;
+    margin: 0 0 1.25rem;
+  }
+  .m3d-lead code { color: #ff8c1a; }
+  .m3d-page-footer {
+    margin-top: 1.25rem;
+    font-size: 0.8rem;
+  }
+  .m3d-page-footer a {
+    color: #35d0ff;
+    text-decoration: none;
+  }
+</style>
