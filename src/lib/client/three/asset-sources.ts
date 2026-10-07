@@ -9,15 +9,18 @@ import type { Dressed3dAnchorName } from "../../shared/dressed-3d-contract";
  * vs private `{userId}/` GLBs) belongs to a later phase.
  */
 
-/** Static test mannequin, generated for this POC (see public/model-3d/). */
-export const MODEL_3D_POC_GLB_URL = "/model-3d/mannequin.glb";
+/**
+ * Stylized DRESSED base figure (dressed-base.glb) + the original box
+ * mannequin, both in public/model-3d/.
+ */
+export const MODEL_3D_POC_GLB_URL = "/model-3d/dressed-base.glb";
 
 /**
  * Approximate height of the test model in meters (camera framing hint only).
  * The real DRESSED master model will replace this file later without any
  * contract change.
  */
-export const MODEL_3D_POC_HEIGHT_M = 1.69;
+export const MODEL_3D_POC_HEIGHT_M = 1.75;
 
 /**
  * Anchor rest positions in MODEL SPACE (meters), relative to the model root
@@ -28,6 +31,10 @@ export const MODEL_3D_POC_HEIGHT_M = 1.69;
  * the figure), so debug markers are visible and the depth offset `w` is
  * measured outward from the surface along local +Z.
  *
+ * Mapped onto the stylized DRESSED base figure (dressed-base.glb,
+ * 1.75 m): head = forehead, torso = chest/bust, waist = natural waist,
+ * shoulders = front of each deltoid.
+ *
  * Anatomical note (contract §anchor vocabulary): shoulder_left is the model's
  * own left arm — which sits at +X when the model faces +Z.
  */
@@ -36,9 +43,9 @@ export const MODEL_3D_POC_ANCHORS: Record<Dressed3dAnchorName, {
   y: number;
   z: number;
 }> = {
-  head: { x: 0, y: 1.575, z: 0.1 },
-  torso: { x: 0, y: 1.19, z: 0.095 },
-  waist: { x: 0, y: 0.975, z: 0.09 },
-  shoulder_left: { x: 0.205, y: 1.37, z: 0.06 },
-  shoulder_right: { x: -0.205, y: 1.37, z: 0.06 },
+  head: { x: 0, y: 1.69, z: 0.069 },
+  torso: { x: 0, y: 1.31, z: 0.109 },
+  waist: { x: 0, y: 1.11, z: 0.074 },
+  shoulder_left: { x: 0.13, y: 1.43, z: 0.043 },
+  shoulder_right: { x: -0.13, y: 1.43, z: 0.043 },
 };
