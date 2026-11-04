@@ -321,4 +321,29 @@ import ProfileTheme from "../components/ProfileTheme.astro";
     message.textContent = "COULD NOT LOAD YOUR CLOSET. PLEASE TRY AGAIN.";
     renderEmpty("YOUR CLOTHING COULD NOT BE LOADED.");
   });
+
+  /* Back/forward cache: a page restored from the bfcache does not re-run its
+     scripts, so the previously rendered closet grid could still be visible
+     after logout. Only the SESSION check is repeated here — if the visitor is
+     signed out the grid is replaced with the empty/log-in state, and if the
+     session is still valid nothing is re-rendered (in-progress selections are
+     preserved). Data itself can never load without a session: loadCloset()
+     already requires an access token. */
+  window.addEventListener("pageshow", (event) => {
+    if (!event.persisted) return;
+    void (async () => {
+      if (!supabase) return; // unconfigured state is left as-is
+      let sessionExists = false;
+      try {
+        const { data } = await supabase.auth.getSession();
+        sessionExists = Boolean(data?.session);
+      } catch {
+        sessionExists = false;
+      }
+      if (!sessionExists) {
+        message.textContent = "PLEASE LOG IN TO VIEW YOUR CLOSET.";
+        renderEmpty("YOUR CLOTHING COULD NOT BE LOADED.");
+      }
+    })();
+  });
 </script>

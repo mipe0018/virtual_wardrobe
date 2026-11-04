@@ -90,7 +90,7 @@ import ProfileTheme from "../components/ProfileTheme.astro";
           </button>
 
           <p class="model-description" id="model-description">
-            Upload a source photo to generate your personal AI fashion model.
+            NO AI MODEL YET — Upload a source photo to generate your personal AI fashion model.
           </p>
           <div class="character-history" id="character-history" aria-live="polite"></div>
           <div class="profile-outfits" id="profile-outfits"></div>
@@ -307,6 +307,88 @@ import ProfileTheme from "../components/ProfileTheme.astro";
 
     </section>
 
+    <!-- ACCOUNT / DELETE ACCOUNT -->
+
+    <section class="account-section" id="account-section">
+
+      <div class="section-heading">
+
+        <div>
+
+          <p class="profile-eyebrow">DANGER ZONE</p>
+
+          <h2>ACCOUNT</h2>
+
+        </div>
+
+      </div>
+
+      <div class="account-danger">
+
+        <p class="account-danger-text">
+
+          This permanently deletes your DRESSED account and your wardrobe data.
+
+          This action cannot be undone.
+
+        </p>
+
+        <button
+
+          type="button"
+
+          class="account-delete-button"
+
+          id="open-account-delete"
+
+        >
+
+          DELETE ACCOUNT
+
+        </button>
+
+        <div class="account-delete-confirm" id="account-delete-confirm" hidden>
+
+          <p class="account-danger-text">
+
+            Are you sure? Your model, photos, clothing and saved outfits will be
+
+            removed permanently.
+
+          </p>
+
+          <div class="account-delete-actions">
+
+            <button type="button" class="account-cancel-button" id="account-delete-cancel">
+
+              CANCEL
+
+            </button>
+
+            <button
+
+              type="button"
+
+              class="account-delete-button"
+
+              id="account-delete-confirm-button"
+
+            >
+
+              DELETE ACCOUNT
+
+            </button>
+
+          </div>
+
+          <p class="account-delete-status" id="account-delete-status" role="status" aria-live="polite"></p>
+
+        </div>
+
+      </div>
+
+    </section>
+
   </section>
 
 </Layout>
@@ -317,6 +399,7 @@ import ProfileTheme from "../components/ProfileTheme.astro";
 
   import { supabase } from "../lib/supabase";
   import { cacheDressedCharacter } from "../lib/client/dressed-character";
+  import { clearDressedClientState } from "../lib/client/account-state";
   import { renderGenerationUsage, waitForGenerationToFinish } from "../lib/client/generation-usage";
   import { failFlow, finishFlow, showFlow } from "../lib/client/generation-flow";
   import {
@@ -1685,6 +1768,103 @@ import ProfileTheme from "../components/ProfileTheme.astro";
 
   });
 
+  /* ---- ACCOUNT — DELETE ACCOUNT ---------------------------------------
+     Two-step confirmation (no browser confirm(), no extra dependency): the
+     panel opens first, the destructive button lives inside it. The API
+     derives the user id from the session token — nothing user-specific is
+     sent except the explicit `confirm` flag. On success the local client
+     state is dropped, the session is invalidated and the visitor is sent to
+     the public start page; on failure everything stays so the user can retry. */
+  const openAccountDeleteButton = document.querySelector(
+    "#open-account-delete"
+  ) as HTMLButtonElement;
+  const accountDeleteConfirm = document.querySelector(
+    "#account-delete-confirm"
+  ) as HTMLElement;
+  const accountDeleteCancel = document.querySelector(
+    "#account-delete-cancel"
+  ) as HTMLButtonElement;
+  const accountDeleteConfirmButton = document.querySelector(
+    "#account-delete-confirm-button"
+  ) as HTMLButtonElement;
+  const accountDeleteStatus = document.querySelector(
+    "#account-delete-status"
+  ) as HTMLElement;
+
+  function setAccountDeletePanelOpen(open: boolean) {
+    if (accountDeleteConfirm) accountDeleteConfirm.hidden = !open;
+    if (openAccountDeleteButton) openAccountDeleteButton.hidden = open;
+    if (accountDeleteStatus) accountDeleteStatus.textContent = "";
+    if (open) accountDeleteCancel?.focus();
+    else openAccountDeleteButton?.focus();
+  }
+
+  openAccountDeleteButton?.addEventListener("click", () => {
+    setAccountDeletePanelOpen(true);
+  });
+
+  accountDeleteCancel?.addEventListener("click", () => {
+    setAccountDeletePanelOpen(false);
+  });
+
+  accountDeleteConfirmButton?.addEventListener("click", () => {
+    void (async () => {
+      if (!supabase || !accountDeleteConfirmButton) return;
+
+      accountDeleteConfirmButton.disabled = true;
+      if (accountDeleteCancel) accountDeleteCancel.disabled = true;
+      if (accountDeleteStatus) {
+        accountDeleteStatus.textContent = "DELETING YOUR ACCOUNT...";
+      }
+
+      try {
+        const { data: sessionData, error: sessionError } =
+          await supabase.auth.getSession();
+        const accessToken = sessionData.session?.access_token;
+        if (sessionError || !accessToken) {
+          throw new Error("PLEASE LOG IN AGAIN BEFORE DELETING YOUR ACCOUNT.");
+        }
+
+        const response = await fetch("/api/account/delete", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ confirm: true }),
+        });
+
+        const result = (await response.json().catch(() => null)) as {
+          error?: string;
+        } | null;
+        if (!response.ok) {
+          throw new Error(
+            result?.error ?? "COULD NOT DELETE YOUR ACCOUNT. PLEASE TRY AGAIN."
+          );
+        }
+
+        // Success: local caches first, then invalidate the session, then leave.
+        clearDressedClientState();
+        try {
+          await supabase.auth.signOut();
+        } catch {
+          // The account no longer exists — the session is meaningless anyway.
+        }
+        window.location.href = "/";
+      } catch (error) {
+        console.error("Could not delete the account.", error);
+        if (accountDeleteStatus) {
+          accountDeleteStatus.textContent =
+            error instanceof Error
+              ? error.message
+              : "COULD NOT DELETE YOUR ACCOUNT. PLEASE TRY AGAIN.";
+        }
+        accountDeleteConfirmButton.disabled = false;
+        if (accountDeleteCancel) accountDeleteCancel.disabled = false;
+      }
+    })();
+  });
+
 </script>
 
 <script>
@@ -1736,5 +1916,14 @@ import ProfileTheme from "../components/ProfileTheme.astro";
   };
 
   void checkProfileSession();
+
+  // Back/forward cache (GDPR Part 5): a page restored from the bfcache does
+  // NOT re-run its scripts, so the guard above would never fire and the
+  // previously rendered private DOM could stay on screen after logout. The
+  // existing guard is simply re-invoked — it only redirects when the session
+  // is gone, so nothing changes for a still-signed-in user.
+  window.addEventListener("pageshow", (event) => {
+    if (event.persisted) void checkProfileSession();
+  });
 
 </script>

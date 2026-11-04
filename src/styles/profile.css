@@ -649,3 +649,102 @@ body.profile-page-shell {
   cursor: not-allowed;
   opacity: 0.5;
 }
+
+/* ========================================
+   ACCOUNT / DELETE ACCOUNT (danger zone)
+   ======================================== */
+
+.account-section {
+  margin-top: 6rem;
+}
+
+.account-danger {
+  max-width: 640px;
+  display: grid;
+  gap: 0.9rem;
+  padding: 1.2rem;
+  border: 2px solid var(--border);
+  background: var(--white);
+  box-shadow: 3px 3px 0 var(--border);
+}
+
+.account-danger-text {
+  margin: 0;
+  color: var(--grey-700);
+  font-size: 0.8rem;
+  line-height: 1.6;
+}
+
+.account-delete-button,
+.account-cancel-button {
+  justify-self: start;
+  min-height: 2.25rem; /* same touch target pattern as the placement buttons */
+  padding: 0.7rem 1.1rem;
+  border: 2px solid var(--border);
+  font-family: "DM Mono", monospace;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  box-shadow: 3px 3px 0 var(--border);
+  transition:
+    transform 0.2s ease,
+    box-shadow 0.2s ease;
+}
+
+.account-delete-button {
+  background: var(--pink-500);
+  color: var(--white);
+}
+
+.account-cancel-button {
+  background: var(--white);
+  color: var(--grey-900);
+}
+
+.account-delete-button:hover,
+.account-cancel-button:hover {
+  transform: translate(2px, 2px);
+  box-shadow: 1px 1px 0 var(--border);
+}
+
+.account-delete-button:focus-visible,
+.account-cancel-button:focus-visible {
+  outline: 2px solid var(--pink-500);
+  outline-offset: 2px;
+}
+
+.account-delete-button:disabled,
+.account-cancel-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: 2px 2px 0 var(--border);
+}
+
+.account-delete-confirm {
+  display: grid;
+  gap: 0.9rem;
+}
+
+/* Explicit rule: the class sets `display`, which would otherwise beat the UA
+   [hidden] rule (same pattern as wardrobe.css .placement-free-fields). */
+.account-delete-confirm[hidden] {
+  display: none;
+}
+
+.account-delete-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.account-delete-status {
+  margin: 0;
+  min-height: 1em;
+  color: var(--pink-600);
+  font-family: "DM Mono", monospace;
+  font-size: 0.65rem;
+  line-height: 1.5;
+}
+

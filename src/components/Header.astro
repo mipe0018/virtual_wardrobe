@@ -59,6 +59,7 @@ const { variant = "public" } = Astro.props;
 
 <script>
   import { supabase } from "../lib/supabase";
+  import { clearDressedClientState } from "../lib/client/account-state";
 
   const logoutButton =
     document.querySelector("#logout") as HTMLButtonElement;
@@ -86,6 +87,10 @@ const { variant = "public" } = Astro.props;
         return;
       }
 
+      // The session is gone: drop every user-specific local cache so the next
+      // account signed in on this browser can never see it (no
+      // closet-items / closet-source-photo / dressed-character leftovers).
+      clearDressedClientState();
       window.location.href = "/login";
     } catch (error) {
       console.error("Unexpected error while logging out.", error);

@@ -1483,4 +1483,11 @@ import ProfileTheme from "../components/ProfileTheme.astro";
   };
 
   void checkWardrobeSession();
+
+  // Back/forward cache: a bfcache-restored page never re-runs its scripts, so
+  // re-invoke the existing guard — a logged-out visitor is redirected and the
+  // restored outfit/wardrobe DOM is never left visible.
+  window.addEventListener("pageshow", (event) => {
+    if (event.persisted) void checkWardrobeSession();
+  });
 </script>

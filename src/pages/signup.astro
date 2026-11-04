@@ -67,12 +67,77 @@ import "../styles/signup.css";
           <label>
             PASSWORD
 
-            <input
-              type="password"
-              id="signup-password"
-              placeholder="••••••••"
-              required
-            />
+            <span class="password-field">
+              <input
+                type="password"
+                id="signup-password"
+                placeholder="••••••••"
+                autocomplete="new-password"
+                required
+              />
+
+              <button
+                type="button"
+                class="password-toggle"
+                id="signup-password-toggle"
+                aria-label="Show password"
+                aria-pressed="false"
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  width="16"
+                  height="16"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                  focusable="false"
+                >
+                  <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z" />
+                  <circle cx="12" cy="12" r="3" />
+                </svg>
+              </button>
+            </span>
+          </label>
+
+          <label>
+            CONFIRM PASSWORD
+
+            <span class="password-field">
+              <input
+                type="password"
+                id="signup-password-confirm"
+                placeholder="••••••••"
+                autocomplete="new-password"
+                required
+              />
+
+              <button
+                type="button"
+                class="password-toggle"
+                id="signup-password-confirm-toggle"
+                aria-label="Show password"
+                aria-pressed="false"
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  width="16"
+                  height="16"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                  focusable="false"
+                >
+                  <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z" />
+                  <circle cx="12" cy="12" r="3" />
+                </svg>
+              </button>
+            </span>
           </label>
 
           <button type="submit" id="signup-submit">
@@ -113,6 +178,10 @@ import "../styles/signup.css";
 
   const signupPassword =
     document.querySelector("#signup-password") as HTMLInputElement;
+
+  const signupPasswordConfirm =
+    document.querySelector("#signup-password-confirm") as HTMLInputElement;
+
   const signupGender =
     document.querySelector("#signup-gender") as HTMLSelectElement;
 
@@ -122,18 +191,63 @@ import "../styles/signup.css";
   const signupMessage =
     document.querySelector("#signup-message") as HTMLElement;
 
+  /* Password visibility toggles: one independent control per field. Real
+     <button type="button"> elements (never submit the form), the password
+     VALUE is never touched — only the input's `type` and the accessible
+     name/state change. Nothing is stored or logged. */
+  function wirePasswordToggle(
+    input: HTMLInputElement,
+    toggle: HTMLButtonElement
+  ) {
+    if (!input || !toggle) return;
+    toggle.addEventListener("click", () => {
+      const revealing = input.type === "password";
+      input.type = revealing ? "text" : "password";
+      const label = revealing ? "Hide password" : "Show password";
+      toggle.setAttribute("aria-label", label);
+      toggle.setAttribute("aria-pressed", String(revealing));
+      toggle.classList.toggle("is-revealed", revealing);
+      input.focus();
+    });
+  }
+
+  wirePasswordToggle(
+    signupPassword,
+    document.querySelector("#signup-password-toggle") as HTMLButtonElement
+  );
+  wirePasswordToggle(
+    signupPasswordConfirm,
+    document.querySelector(
+      "#signup-password-confirm-toggle"
+    ) as HTMLButtonElement
+  );
+
   signupForm?.addEventListener("submit", async (event) => {
     event.preventDefault();
 
     signupMessage.textContent = "";
 
+    const email = signupEmail.value.trim();
+    const password = signupPassword.value;
+    const passwordConfirm = signupPasswordConfirm.value;
+
     if (
       !signupName.value.trim() ||
-      !signupEmail.value.trim() ||
-      !signupPassword.value ||
+      !email ||
+      !password ||
+      !passwordConfirm ||
       (signupGender.value !== "woman" && signupGender.value !== "man")
     ) {
-      signupMessage.textContent = "Enter your name, email, and password to create your closet.";
+      signupMessage.textContent =
+        "Enter your name, email, and password to create your closet.";
+      return;
+    }
+
+    // Block the request entirely when the two passwords differ.
+    if (password !== passwordConfirm) {
+      signupMessage.textContent =
+        "Passwords do not match. Enter the same password in both fields.";
+      signupPasswordConfirm.focus();
       return;
     }
 
@@ -147,8 +261,8 @@ import "../styles/signup.css";
 
     try {
       const { data, error } = await supabase.auth.signUp({
-        email: signupEmail.value.trim(),
-        password: signupPassword.value,
+        email,
+        password,
         options: {
           data: {
             name: signupName.value.trim(),

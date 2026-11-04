@@ -127,3 +127,51 @@
   font-family: "DM Mono", monospace;
   font-size: 0.65rem;
 }
+
+/* ---- Password fields: confirm + visibility toggle (signup) ---- */
+
+.password-field {
+  position: relative;
+  display: block;
+}
+
+.password-field input {
+  padding-right: 2.9rem;
+}
+
+/* More specific than `.auth-content button` so the eye stays a small icon
+   button instead of the big pink submit pill. Real <button type="button">:
+   it can never submit the form, it is keyboard reachable, and it only flips
+   the input `type` — the value itself is never touched. */
+.password-field .password-toggle {
+  position: absolute;
+  top: 50%;
+  right: 0.45rem;
+  transform: translateY(-50%);
+
+  display: grid;
+  place-items: center;
+  padding: 0.35rem;
+
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--grey-500);
+
+  cursor: pointer;
+}
+
+.password-field .password-toggle:hover {
+  background: var(--pink-100);
+  color: var(--pink-600);
+}
+
+.password-field .password-toggle:focus-visible {
+  outline: 2px solid var(--pink-500);
+  outline-offset: 1px;
+}
+
+.password-field .password-toggle.is-revealed {
+  background: var(--pink-100);
+  color: var(--pink-600);
+}
